@@ -480,39 +480,82 @@ def delete_skill(conn: sqlite3.Connection, skill_id: int) -> None:
     logger.info("スキルを削除しました: skill_id=%s", skill_id)
 
 
+PORTFOLIO_JSON_LIST_FIELDS = [
+    "technologies", "skills", "subcategories", "target_job_categories",
+    "design_tools", "technology_keywords",
+]
+PORTFOLIO_BOOL_FIELDS = ["is_active", "for_development", "for_design", "for_ai_design"]
+
+
 def _portfolio_row_to_dict(row: sqlite3.Row) -> dict:
     data = dict(row)
-    for key in ("technologies_json", "skills_json"):
-        field = key.removesuffix("_json")
+    for field in PORTFOLIO_JSON_LIST_FIELDS:
+        key = f"{field}_json"
+        if key not in data:
+            continue
         try:
             data[field] = json.loads(data[key]) if data[key] else []
         except (TypeError, json.JSONDecodeError):
             data[field] = []
+    for field in PORTFOLIO_BOOL_FIELDS:
+        if field in data:
+            data[field] = bool(data[field])
     return data
 
 
 def list_portfolios(conn: sqlite3.Connection, profile_id: int) -> list[dict]:
     rows = conn.execute(
-        "SELECT * FROM portfolios WHERE profile_id = ? ORDER BY id", (profile_id,)
+        "SELECT * FROM portfolios WHERE profile_id = ? ORDER BY display_order, id", (profile_id,)
+    ).fetchall()
+    return [_portfolio_row_to_dict(r) for r in rows]
+
+
+def get_portfolio(conn: sqlite3.Connection, portfolio_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM portfolios WHERE id = ?", (portfolio_id,)).fetchone()
+    return _portfolio_row_to_dict(row) if row else None
+
+
+def get_portfolios_by_ids(conn: sqlite3.Connection, portfolio_ids: Iterable[int]) -> list[dict]:
+    ids = list(portfolio_ids)
+    if not ids:
+        return []
+    placeholders = ", ".join(["?"] * len(ids))
+    rows = conn.execute(
+        f"SELECT * FROM portfolios WHERE id IN ({placeholders})", ids
     ).fetchall()
     return [_portfolio_row_to_dict(r) for r in rows]
 
 
 def add_portfolio(conn: sqlite3.Connection, profile_id: int, data: dict) -> int:
     now = now_jst_str()
+    data = dict(data)
+    for field in PORTFOLIO_JSON_LIST_FIELDS:
+        data.setdefault(field, [])
     cursor = conn.execute(
         """
         INSERT INTO portfolios
             (profile_id, title, description, technologies_json, skills_json,
-             portfolio_url, github_url, is_active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             portfolio_url, github_url, is_active,
+             portfolio_type, main_category, subcategories_json, target_job_categories_json,
+             design_tools_json, technology_keywords_json, sales_description, priority,
+             for_development, for_design, for_ai_design, display_order, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             profile_id, data["title"], data.get("description"),
             json.dumps(data.get("technologies", []), ensure_ascii=False),
             json.dumps(data.get("skills", []), ensure_ascii=False),
             data.get("portfolio_url"), data.get("github_url"),
-            int(data.get("is_active", True)), now, now,
+            int(data.get("is_active", True)),
+            data.get("portfolio_type"), data.get("main_category"),
+            json.dumps(data.get("subcategories", []), ensure_ascii=False),
+            json.dumps(data.get("target_job_categories", []), ensure_ascii=False),
+            json.dumps(data.get("design_tools", []), ensure_ascii=False),
+            json.dumps(data.get("technology_keywords", []), ensure_ascii=False),
+            data.get("sales_description"), int(data.get("priority", 50)),
+            int(data.get("for_development", True)), int(data.get("for_design", False)),
+            int(data.get("for_ai_design", False)), int(data.get("display_order", 50)),
+            now, now,
         ),
     )
     logger.info("制作実績を追加しました: title=%s", data.get("title"))
@@ -522,14 +565,20 @@ def add_portfolio(conn: sqlite3.Connection, profile_id: int, data: dict) -> int:
 def update_portfolio(conn: sqlite3.Connection, portfolio_id: int, data: dict) -> None:
     data = dict(data)
     now = now_jst_str()
-    if "technologies" in data:
-        data["technologies_json"] = json.dumps(data.pop("technologies"), ensure_ascii=False)
-    if "skills" in data:
-        data["skills_json"] = json.dumps(data.pop("skills"), ensure_ascii=False)
-    if "is_active" in data:
-        data["is_active"] = int(data["is_active"])
+    for field in PORTFOLIO_JSON_LIST_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+    for field in PORTFOLIO_BOOL_FIELDS + ["priority", "display_order"]:
+        if field in data and data[field] is not None:
+            data[field] = int(data[field])
 
-    allowed = {"title", "description", "technologies_json", "skills_json", "portfolio_url", "github_url", "is_active"}
+    allowed = {
+        "title", "description", "technologies_json", "skills_json", "portfolio_url", "github_url",
+        "is_active", "portfolio_type", "main_category", "subcategories_json",
+        "target_job_categories_json", "design_tools_json", "technology_keywords_json",
+        "sales_description", "priority", "for_development", "for_design", "for_ai_design",
+        "display_order",
+    }
     columns = [c for c in data if c in allowed]
     if not columns:
         return
@@ -600,3 +649,414 @@ def save_analysis_setting(conn: sqlite3.Connection, key: str, value: Any) -> Non
             (key, serialized, now, now),
         )
     logger.info("AI分析設定を保存しました: key=%s", key)
+
+
+# =============================================================================
+# 第3段階: portfolio_matches（案件ごとのポートフォリオ関連度・選択状態）
+# =============================================================================
+
+def _portfolio_match_row_to_dict(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    try:
+        data["matched_skills"] = json.loads(data["matched_skills_json"]) if data.get("matched_skills_json") else []
+    except (TypeError, json.JSONDecodeError):
+        data["matched_skills"] = []
+    data["is_selected"] = bool(data.get("is_selected"))
+    return data
+
+
+def save_portfolio_matches(conn: sqlite3.Connection, job_id: int, matches: list[dict]) -> None:
+    """案件のポートフォリオ関連度計算結果を保存する（既存の計算結果は置き換える）。"""
+    now = now_jst_str()
+    conn.execute("DELETE FROM portfolio_matches WHERE job_id = ?", (job_id,))
+    for m in matches:
+        conn.execute(
+            """
+            INSERT INTO portfolio_matches
+                (job_id, portfolio_id, relevance_score, matched_skills_json, matched_category,
+                 match_reason, is_selected, selection_order, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id, m["portfolio_id"], m.get("relevance_score", 0),
+                json.dumps(m.get("matched_skills", []), ensure_ascii=False),
+                m.get("matched_category"), m.get("match_reason"),
+                int(m.get("is_selected", False)), m.get("selection_order"), now, now,
+            ),
+        )
+    logger.info("ポートフォリオ関連度を計算・保存しました: job_id=%s 件数=%s", job_id, len(matches))
+
+
+def get_portfolio_matches_for_job(conn: sqlite3.Connection, job_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM portfolio_matches WHERE job_id = ? ORDER BY relevance_score DESC", (job_id,)
+    ).fetchall()
+    return [_portfolio_match_row_to_dict(r) for r in rows]
+
+
+def get_selected_portfolio_matches(conn: sqlite3.Connection, job_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM portfolio_matches WHERE job_id = ? AND is_selected = 1 ORDER BY selection_order",
+        (job_id,),
+    ).fetchall()
+    return [_portfolio_match_row_to_dict(r) for r in rows]
+
+
+def update_portfolio_match_selection(conn: sqlite3.Connection, job_id: int, selected_ids: list[int]) -> None:
+    """手動でのポートフォリオ選択（追加・削除・並べ替え）を反映する。"""
+    now = now_jst_str()
+    conn.execute(
+        "UPDATE portfolio_matches SET is_selected = 0, selection_order = NULL, updated_at = ? WHERE job_id = ?",
+        (now, job_id),
+    )
+    for order, portfolio_id in enumerate(selected_ids):
+        conn.execute(
+            """
+            UPDATE portfolio_matches SET is_selected = 1, selection_order = ?, updated_at = ?
+            WHERE job_id = ? AND portfolio_id = ?
+            """,
+            (order, now, job_id, portfolio_id),
+        )
+    logger.info("ポートフォリオの選択状態を更新しました: job_id=%s selected=%s", job_id, selected_ids)
+
+
+# =============================================================================
+# 第3段階: application_drafts（案件ごとの営業文下書き）
+# =============================================================================
+
+APPLICATION_DRAFT_JSON_FIELDS = [
+    "questions_for_client", "client_questions", "client_answers",
+    "selected_portfolio_ids", "portfolio_reasons", "skills_to_highlight",
+    "proposed_approach", "warnings", "missing_information",
+]
+
+APPLICATION_DRAFT_COLUMNS = [
+    "job_id", "analysis_id", "profile_id", "title", "generation_type", "tone", "length_type",
+    "application_message", "short_message", "proposed_price", "minimum_price", "ideal_price",
+    "price_reason", "proposed_delivery_days", "minimum_delivery_days", "safe_delivery_days",
+    "delivery_reason", "questions_for_client_json", "client_questions_json", "client_answers_json",
+    "selected_portfolio_ids_json", "portfolio_reasons_json", "skills_to_highlight_json",
+    "proposed_approach_json", "warnings_json", "missing_information_json", "confidence_score",
+    "preparation_status", "user_memo", "provider", "model", "prompt_version", "source_hash",
+    "copied_at",
+]
+
+
+def _application_draft_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if row is None:
+        return None
+    data = dict(row)
+    for field in APPLICATION_DRAFT_JSON_FIELDS:
+        key = f"{field}_json"
+        if key in data:
+            try:
+                data[field] = json.loads(data[key]) if data[key] else []
+            except (TypeError, json.JSONDecodeError):
+                data[field] = []
+    return data
+
+
+def create_application_draft(conn: sqlite3.Connection, job_id: int, data: dict) -> int:
+    """営業文の下書きを新規作成する。"""
+    now = now_jst_str()
+    data = dict(data)
+    data["job_id"] = job_id
+    data.setdefault("preparation_status", "未作成")
+
+    for field in APPLICATION_DRAFT_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+
+    columns = [c for c in APPLICATION_DRAFT_COLUMNS if c in data]
+    values = [data[c] for c in columns]
+    columns += ["created_at", "updated_at"]
+    values += [now, now]
+
+    placeholders = ", ".join(["?"] * len(columns))
+    cursor = conn.execute(
+        f"INSERT INTO application_drafts ({', '.join(columns)}) VALUES ({placeholders})", values,
+    )
+    logger.info("営業文の下書きを作成しました: job_id=%s draft_id=%s", job_id, cursor.lastrowid)
+    return cursor.lastrowid
+
+
+def update_application_draft(conn: sqlite3.Connection, draft_id: int, data: dict) -> None:
+    """既存の営業文下書きを更新する（同一案件の「現在の下書き」を上書きする場合に使用）。"""
+    data = dict(data)
+    now = now_jst_str()
+    for field in APPLICATION_DRAFT_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+
+    columns = [c for c in APPLICATION_DRAFT_COLUMNS if c in data]
+    if not columns:
+        return
+    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+    values = [data[c] for c in columns] + [now, draft_id]
+    conn.execute(f"UPDATE application_drafts SET {set_clause} WHERE id = ?", values)
+    logger.info("営業文の下書きを更新しました: draft_id=%s", draft_id)
+
+
+def get_application_draft(conn: sqlite3.Connection, draft_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM application_drafts WHERE id = ?", (draft_id,)).fetchone()
+    return _application_draft_row_to_dict(row)
+
+
+def get_current_application_draft(conn: sqlite3.Connection, job_id: int) -> Optional[dict]:
+    """指定案件の「現在の」営業文下書き（最新のもの）を取得する。"""
+    row = conn.execute(
+        "SELECT * FROM application_drafts WHERE job_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    return _application_draft_row_to_dict(row)
+
+
+def list_application_drafts(conn: sqlite3.Connection, job_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM application_drafts WHERE job_id = ? ORDER BY created_at DESC, id DESC", (job_id,)
+    ).fetchall()
+    return [_application_draft_row_to_dict(r) for r in rows]
+
+
+def mark_application_draft_copied(conn: sqlite3.Connection, draft_id: int) -> None:
+    now = now_jst_str()
+    conn.execute(
+        "UPDATE application_drafts SET copied_at = ?, updated_at = ? WHERE id = ?",
+        (now, now, draft_id),
+    )
+    logger.info("営業文をコピーしました: draft_id=%s", draft_id)
+
+
+def get_jobs_with_latest_application(conn: sqlite3.Connection) -> list[dict]:
+    """全案件に、存在すれば最新の営業文下書きを結合して返す（案件一覧・営業文一覧の表示用）。"""
+    rows = conn.execute(
+        """
+        SELECT j.*,
+               d.id AS draft_id, d.title AS application_title, d.generation_type, d.tone,
+               d.length_type, d.application_message, d.short_message, d.proposed_price,
+               d.proposed_delivery_days, d.preparation_status, d.copied_at,
+               d.selected_portfolio_ids_json, d.created_at AS draft_created_at,
+               d.updated_at AS draft_updated_at
+        FROM jobs j
+        LEFT JOIN (
+            SELECT d1.* FROM application_drafts d1
+            WHERE d1.id = (
+                SELECT d2.id FROM application_drafts d2
+                WHERE d2.job_id = d1.job_id
+                ORDER BY d2.created_at DESC, d2.id DESC LIMIT 1
+            )
+        ) d ON d.job_id = j.id
+        ORDER BY j.collected_at DESC, j.id DESC
+        """
+    ).fetchall()
+    results = []
+    for row in rows:
+        data = dict(row)
+        try:
+            data["selected_portfolio_ids"] = (
+                json.loads(data["selected_portfolio_ids_json"]) if data.get("selected_portfolio_ids_json") else []
+            )
+        except (TypeError, json.JSONDecodeError):
+            data["selected_portfolio_ids"] = []
+        results.append(data)
+    return results
+
+
+# =============================================================================
+# 第3段階: application_versions（営業文の編集履歴）
+# =============================================================================
+
+def add_application_version(
+    conn: sqlite3.Connection,
+    draft_id: int,
+    application_message: str,
+    short_message: str | None = None,
+    version_type: str = "generated",
+    change_instruction: str | None = None,
+    created_by: str = "system",
+) -> int:
+    """営業文の状態を1バージョンとして記録する（編集・再生成のたびに直前の状態を保存する）。"""
+    existing_count = conn.execute(
+        "SELECT COUNT(*) FROM application_versions WHERE application_draft_id = ?", (draft_id,)
+    ).fetchone()[0]
+    cursor = conn.execute(
+        """
+        INSERT INTO application_versions
+            (application_draft_id, version_number, version_type, application_message,
+             short_message, change_instruction, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            draft_id, existing_count + 1, version_type, application_message,
+            short_message, change_instruction, created_by, now_jst_str(),
+        ),
+    )
+    logger.info("営業文のバージョンを記録しました: draft_id=%s version=%s", draft_id, existing_count + 1)
+    return cursor.lastrowid
+
+
+def list_application_versions(conn: sqlite3.Connection, draft_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM application_versions WHERE application_draft_id = ? ORDER BY version_number DESC",
+        (draft_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_application_version(conn: sqlite3.Connection, version_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM application_versions WHERE id = ?", (version_id,)).fetchone()
+    return dict(row) if row else None
+
+
+# =============================================================================
+# 第3段階: application_templates（AI APIなしでの営業文テンプレート）
+# =============================================================================
+
+def list_application_templates(conn: sqlite3.Connection, category: str | None = None) -> list[dict]:
+    if category:
+        rows = conn.execute(
+            "SELECT * FROM application_templates WHERE category = ? AND is_active = 1 ORDER BY id",
+            (category,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM application_templates WHERE is_active = 1 ORDER BY category, id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_application_template(conn: sqlite3.Connection, template_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM application_templates WHERE id = ?", (template_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def add_application_template(conn: sqlite3.Connection, data: dict) -> int:
+    now = now_jst_str()
+    cursor = conn.execute(
+        """
+        INSERT INTO application_templates
+            (template_name, category, tone, length_type, template_body, is_default, is_active,
+             created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            data["template_name"], data.get("category"), data.get("tone"), data.get("length_type"),
+            data.get("template_body"), int(data.get("is_default", False)), int(data.get("is_active", True)),
+            now, now,
+        ),
+    )
+    logger.info("営業文テンプレートを追加しました: template_name=%s", data.get("template_name"))
+    return cursor.lastrowid
+
+
+def update_application_template(conn: sqlite3.Connection, template_id: int, data: dict) -> None:
+    data = dict(data)
+    now = now_jst_str()
+    for field in ("is_default", "is_active"):
+        if field in data:
+            data[field] = int(data[field])
+    allowed = {"template_name", "category", "tone", "length_type", "template_body", "is_default", "is_active"}
+    columns = [c for c in data if c in allowed]
+    if not columns:
+        return
+    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+    values = [data[c] for c in columns] + [now, template_id]
+    conn.execute(f"UPDATE application_templates SET {set_clause} WHERE id = ?", values)
+
+
+# =============================================================================
+# 第3段階: pricing_settings（応募金額・納期提案の設定）
+# =============================================================================
+
+def get_pricing_setting(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
+    row = conn.execute(
+        "SELECT setting_value FROM pricing_settings WHERE setting_key = ?", (key,)
+    ).fetchone()
+    if row is None:
+        return default
+    try:
+        return json.loads(row["setting_value"])
+    except (TypeError, json.JSONDecodeError):
+        return row["setting_value"]
+
+
+def get_all_pricing_settings(conn: sqlite3.Connection) -> dict:
+    settings: dict = {}
+    rows = conn.execute("SELECT setting_key, setting_value FROM pricing_settings").fetchall()
+    for row in rows:
+        try:
+            settings[row["setting_key"]] = json.loads(row["setting_value"])
+        except (TypeError, json.JSONDecodeError):
+            settings[row["setting_key"]] = row["setting_value"]
+    return settings
+
+
+def save_pricing_setting(conn: sqlite3.Connection, key: str, value: Any) -> None:
+    now = now_jst_str()
+    serialized = json.dumps(value, ensure_ascii=False)
+    existing = conn.execute(
+        "SELECT id FROM pricing_settings WHERE setting_key = ?", (key,)
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE pricing_settings SET setting_value = ?, updated_at = ? WHERE setting_key = ?",
+            (serialized, now, key),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO pricing_settings (setting_key, setting_value, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            (key, serialized, now, now),
+        )
+    logger.info("料金・納期設定を保存しました: key=%s", key)
+
+
+# =============================================================================
+# 第3段階: application_checklists（応募前確認チェックリスト）
+# =============================================================================
+
+_CHECKLIST_FIELDS = [
+    "job_reviewed", "conditions_confirmed", "price_confirmed", "deadline_confirmed",
+    "message_confirmed", "portfolio_confirmed", "client_questions_answered", "safety_confirmed",
+]
+
+
+def get_application_checklist(conn: sqlite3.Connection, draft_id: int) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT * FROM application_checklists WHERE application_draft_id = ?", (draft_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    for field in _CHECKLIST_FIELDS:
+        data[field] = bool(data.get(field))
+    return data
+
+
+def save_application_checklist(conn: sqlite3.Connection, draft_id: int, data: dict) -> None:
+    """応募前確認チェックリストを保存する（存在しなければ作成する）。"""
+    now = now_jst_str()
+    values = {field: int(bool(data.get(field, False))) for field in _CHECKLIST_FIELDS}
+    all_checked = all(values.values())
+    completed_at = now if all_checked else None
+
+    existing = conn.execute(
+        "SELECT id FROM application_checklists WHERE application_draft_id = ?", (draft_id,)
+    ).fetchone()
+    if existing:
+        set_clause = ", ".join(f"{f} = ?" for f in _CHECKLIST_FIELDS)
+        conn.execute(
+            f"UPDATE application_checklists SET {set_clause}, completed_at = ?, updated_at = ? "
+            f"WHERE application_draft_id = ?",
+            [*values.values(), completed_at, now, draft_id],
+        )
+    else:
+        columns = ", ".join(_CHECKLIST_FIELDS)
+        placeholders = ", ".join(["?"] * len(_CHECKLIST_FIELDS))
+        conn.execute(
+            f"INSERT INTO application_checklists "
+            f"(application_draft_id, {columns}, completed_at, updated_at) "
+            f"VALUES (?, {placeholders}, ?, ?)",
+            [draft_id, *values.values(), completed_at, now],
+        )
+    logger.info("応募前確認チェックリストを保存しました: draft_id=%s 完了=%s", draft_id, all_checked)

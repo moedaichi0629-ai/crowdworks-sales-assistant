@@ -43,4 +43,5 @@ def test_skills_and_portfolios_seeded(db_path):
         skill_count = conn.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
         portfolio_count = conn.execute("SELECT COUNT(*) FROM portfolios").fetchone()[0]
     assert skill_count > 0
-    assert portfolio_count == 7
+    # 第2段階の7件 + 第3段階で追加されるAI・開発/デザイン/GitHubポートフォリオ3件 = 10件
+    assert portfolio_count == 10

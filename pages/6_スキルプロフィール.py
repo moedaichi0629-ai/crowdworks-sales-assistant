@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src.config import EXPERIENCE_TYPES, PROFICIENCY_LEVELS, SKILL_CATEGORIES
+from src.config import EXPERIENCE_TYPES, PROFICIENCY_LEVELS, PORTFOLIO_TYPE_LABELS_JA, SKILL_CATEGORIES
 from src.database import init_db, session
 from src.logger import get_logger
 from src.profile.profile_service import (
@@ -172,27 +172,79 @@ with tab_skills:
             else:
                 st.warning("スキル名を入力してください。")
 
-# ============================= 制作実績 =============================
+# ============================= 制作実績（ポートフォリオ管理） =============================
 with tab_portfolios:
     st.markdown("#### 制作実績一覧")
-    for p in portfolios:
-        with st.expander(p["title"]):
+    st.caption(
+        "AI・開発案件では「AI・開発」区分のポートフォリオを、デザイン案件では「デザイン」区分（foriio等）を"
+        "優先して営業文へ反映します。AI×デザイン複合案件向けの実績は「AI×デザイン案件向け」にチェックしてください。"
+    )
+
+    filter_options = ["すべて", "AI・開発", "デザイン", "総合", "非公開"]
+    portfolio_filter = st.selectbox("表示フィルター", options=filter_options)
+
+    def _filtered(items: list[dict]) -> list[dict]:
+        if portfolio_filter == "AI・開発":
+            return [p for p in items if p.get("portfolio_type") == "development"]
+        if portfolio_filter == "デザイン":
+            return [p for p in items if p.get("portfolio_type") == "design"]
+        if portfolio_filter == "総合":
+            return [p for p in items if p.get("portfolio_type") == "general"]
+        if portfolio_filter == "非公開":
+            return [p for p in items if not p.get("is_active", True)]
+        return items
+
+    display_portfolios = sorted(_filtered(portfolios), key=lambda p: (p.get("display_order", 50), p["id"]))
+
+    for p in display_portfolios:
+        type_label = PORTFOLIO_TYPE_LABELS_JA.get(p.get("portfolio_type"), "未設定")
+        status_label = "公開中" if p.get("is_active", True) else "非公開"
+        with st.expander(f"[{type_label} / {status_label}] {p['title']}"):
             with st.form(f"portfolio_form_{p['id']}"):
                 title = st.text_input("タイトル", value=p["title"], key=f"pf_title_{p['id']}")
                 description = st.text_area("説明", value=p.get("description") or "", key=f"pf_desc_{p['id']}")
+                sales_description = st.text_area(
+                    "営業文用の紹介文（未入力の場合は説明欄を使用）",
+                    value=p.get("sales_description") or "", key=f"pf_sales_desc_{p['id']}",
+                )
                 technologies = st.text_input("使用技術（カンマ区切り）", value=", ".join(p.get("technologies", [])), key=f"pf_tech_{p['id']}")
                 skills_text = st.text_input("関連スキル（カンマ区切り）", value=", ".join(p.get("skills", [])), key=f"pf_skills_{p['id']}")
-                portfolio_url = st.text_input("ポートフォリオURL", value=p.get("portfolio_url") or "", key=f"pf_url_{p['id']}")
+                design_tools_text = st.text_input("デザインツール（カンマ区切り）", value=", ".join(p.get("design_tools", [])), key=f"pf_tools_{p['id']}")
+                target_categories_text = st.text_input(
+                    "対象案件カテゴリ（カンマ区切り）", value=", ".join(p.get("target_job_categories", [])), key=f"pf_target_{p['id']}",
+                )
+                portfolio_url = st.text_input("メインURL", value=p.get("portfolio_url") or "", key=f"pf_url_{p['id']}")
                 github_url = st.text_input("GitHub URL", value=p.get("github_url") or "", key=f"pf_gh_{p['id']}")
+
+                c1, c2, c3 = st.columns(3)
+                portfolio_type = c1.selectbox(
+                    "種類", options=["development", "design", "general"],
+                    format_func=lambda v: PORTFOLIO_TYPE_LABELS_JA.get(v, v),
+                    index=["development", "design", "general"].index(p.get("portfolio_type") or "development"),
+                    key=f"pf_type_{p['id']}",
+                )
+                priority = c2.number_input("優先度（大きいほど優先）", min_value=0, max_value=100, value=int(p.get("priority", 50)), key=f"pf_priority_{p['id']}")
+                display_order = c3.number_input("表示順（小さいほど先頭）", min_value=0, max_value=999, value=int(p.get("display_order", 50)), key=f"pf_order_{p['id']}")
+
+                c4, c5, c6, c7 = st.columns(4)
+                for_development = c4.checkbox("開発案件向け", value=p.get("for_development", True), key=f"pf_dev_{p['id']}")
+                for_design = c5.checkbox("デザイン案件向け", value=p.get("for_design", False), key=f"pf_design_{p['id']}")
+                for_ai_design = c6.checkbox("AI×デザイン案件向け", value=p.get("for_ai_design", False), key=f"pf_aidesign_{p['id']}")
+                is_active = c7.checkbox("公開する", value=p.get("is_active", True), key=f"pf_active_{p['id']}")
 
                 save_col, del_col = st.columns(2)
                 if save_col.form_submit_button("保存"):
                     with session() as conn:
                         edit_profile_portfolio(conn, p["id"], {
-                            "title": title, "description": description,
+                            "title": title, "description": description, "sales_description": sales_description or None,
                             "technologies": [t.strip() for t in technologies.split(",") if t.strip()],
                             "skills": [s.strip() for s in skills_text.split(",") if s.strip()],
+                            "design_tools": [t.strip() for t in design_tools_text.split(",") if t.strip()],
+                            "target_job_categories": [t.strip() for t in target_categories_text.split(",") if t.strip()],
                             "portfolio_url": portfolio_url or None, "github_url": github_url or None,
+                            "portfolio_type": portfolio_type, "priority": priority, "display_order": display_order,
+                            "for_development": for_development, "for_design": for_design, "for_ai_design": for_ai_design,
+                            "is_active": is_active,
                         })
                     st.success("保存しました。")
                     st.rerun()
@@ -211,6 +263,10 @@ with tab_portfolios:
         new_skills = st.text_input("関連スキル（カンマ区切り）")
         new_portfolio_url = st.text_input("ポートフォリオURL")
         new_github_url = st.text_input("GitHub URL")
+        new_type = st.selectbox("種類", options=["development", "design", "general"], format_func=lambda v: PORTFOLIO_TYPE_LABELS_JA.get(v, v))
+        nc1, nc2 = st.columns(2)
+        new_for_development = nc1.checkbox("開発案件向け", value=True)
+        new_for_design = nc2.checkbox("デザイン案件向け", value=False)
         if st.form_submit_button("追加する", type="primary"):
             if new_title:
                 with session() as conn:
@@ -219,6 +275,7 @@ with tab_portfolios:
                         "technologies": [t.strip() for t in new_technologies.split(",") if t.strip()],
                         "skills": [s.strip() for s in new_skills.split(",") if s.strip()],
                         "portfolio_url": new_portfolio_url or None, "github_url": new_github_url or None,
+                        "portfolio_type": new_type, "for_development": new_for_development, "for_design": new_for_design,
                     })
                 st.success("制作実績を追加しました。")
                 st.rerun()

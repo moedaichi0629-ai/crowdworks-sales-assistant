@@ -4,15 +4,20 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from src.config import JOB_STATUSES, JOB_TYPES
+from src.application.application_generator import GenerationBlockedError
+from src.application.application_service import copy_application, generate_for_job
+from src.config import JOB_STATUSES, JOB_TYPES, PORTFOLIO_TYPE_LABELS_JA
 from src.database import init_db, session
 from src.export import to_csv_bytes, to_excel_bytes
 from src.filters import SORT_OPTIONS, apply_filters, apply_sort
 from src.logger import get_logger
+from src.portfolio.portfolio_service import get_selected_portfolios_with_detail
 from src.repositories import (
     get_all_settings,
     get_job,
     get_jobs_with_latest_analysis,
+    get_jobs_with_latest_application,
+    list_application_drafts,
     update_favorite,
     update_memo,
     update_status_bulk,
@@ -27,6 +32,16 @@ st.title("📄 案件一覧")
 with session() as conn:
     jobs = get_jobs_with_latest_analysis(conn)
     settings = get_all_settings(conn)
+    application_by_job = {j["id"]: j for j in get_jobs_with_latest_application(conn)}
+
+_APPLICATION_FIELDS = [
+    "draft_id", "preparation_status", "proposed_price", "proposed_delivery_days",
+    "generation_type", "copied_at", "draft_updated_at", "selected_portfolio_ids_json",
+]
+for job in jobs:
+    app_row = application_by_job.get(job["id"], {})
+    for field in _APPLICATION_FIELDS:
+        job[field] = app_row.get(field)
 
 PRIORITY_BADGES = {
     "最優先": "🌟最優先", "優先": "🟢優先", "応募候補": "🔵応募候補",
@@ -101,6 +116,12 @@ display_df["危険レベル"] = display_df.get("risk_level", pd.Series(dtype=obj
 display_df["分析状況"] = display_df.get("analysis_id", pd.Series(dtype=object)).apply(
     lambda v: "分析済み" if pd.notna(v) else "未分析"
 )
+display_df["営業文作成状況"] = display_df.get("draft_id", pd.Series(dtype=object)).apply(
+    lambda v: "作成済み" if pd.notna(v) else "未作成"
+)
+display_df["コピー済み"] = display_df.get("copied_at", pd.Series(dtype=object)).apply(
+    lambda v: "済" if pd.notna(v) and v else "-"
+)
 
 display_columns = [
     "id", "is_favorite", "collected_at", "title", "job_type", "category", "budget_text",
@@ -108,6 +129,7 @@ display_columns = [
     "identity_verified", "matched_keyword", "url", "status", "memo",
     "total_score", "ai_suitability_score", "safety_score", "応募優先度", "difficulty",
     "危険レベル", "分析状況", "analyzed_at",
+    "営業文作成状況", "preparation_status", "proposed_price", "proposed_delivery_days", "コピー済み", "draft_updated_at",
 ]
 display_columns = [c for c in display_columns if c in display_df.columns]
 
@@ -140,6 +162,10 @@ st.dataframe(
         "safety_score": st.column_config.NumberColumn("安全度"),
         "difficulty": "難易度",
         "analyzed_at": "分析日時",
+        "preparation_status": "応募準備ステータス",
+        "proposed_price": st.column_config.NumberColumn("提案金額"),
+        "proposed_delivery_days": st.column_config.NumberColumn("提案納期(日)"),
+        "draft_updated_at": "営業文最終更新日時",
     },
 )
 
@@ -229,3 +255,68 @@ if detail_id is not None:
             except Exception:
                 logger.exception("案件詳細の保存に失敗しました。")
                 st.error("保存に失敗しました。")
+
+        st.markdown("---")
+        st.markdown("#### 営業文・ポートフォリオ")
+        with session() as conn:
+            existing_drafts = list_application_drafts(conn, int(detail_id))
+            selected_portfolios = get_selected_portfolios_with_detail(conn, int(detail_id))
+
+        if selected_portfolios:
+            names = "、".join(f"{p['title']}（{PORTFOLIO_TYPE_LABELS_JA.get(p.get('portfolio_type'), '-')}）" for p in selected_portfolios)
+            st.caption(f"選択中のポートフォリオ（{len(selected_portfolios)}件）: {names}")
+        else:
+            st.caption("選択中のポートフォリオ: 未選択（営業文生成時に自動選択されます）")
+
+        app_action_cols = st.columns(4)
+        if app_action_cols[0].button("営業文を生成する", key=f"gen_app_{detail_id}"):
+            try:
+                with session() as conn:
+                    generate_for_job(conn, int(detail_id))
+                st.success("営業文を生成しました。「営業文一覧」ページで確認できます。")
+                st.rerun()
+            except GenerationBlockedError as e:
+                st.error("危険案件の可能性があるため営業文生成を停止しました: " + " / ".join(e.reasons))
+            except Exception:
+                logger.exception("営業文生成に失敗しました。")
+                st.error("営業文生成に失敗しました。")
+
+        if app_action_cols[1].button("AI・開発ポートフォリオを優先選択", key=f"pf_dev_{detail_id}"):
+            with session() as conn:
+                from src.repositories import list_portfolios as _list_portfolios
+                from src.repositories import get_profile as _get_profile
+                prof = _get_profile(conn)
+                dev_ids = [p["id"] for p in _list_portfolios(conn, prof["id"]) if p.get("for_development") and p.get("is_active", True)][:3]
+                from src.portfolio.portfolio_service import update_manual_portfolio_selection
+                update_manual_portfolio_selection(conn, int(detail_id), dev_ids)
+            st.success("AI・開発ポートフォリオを選択しました。")
+            st.rerun()
+
+        if app_action_cols[2].button("デザインポートフォリオを優先選択", key=f"pf_design_{detail_id}"):
+            with session() as conn:
+                from src.repositories import list_portfolios as _list_portfolios
+                from src.repositories import get_profile as _get_profile
+                prof = _get_profile(conn)
+                design_ids = [p["id"] for p in _list_portfolios(conn, prof["id"]) if p.get("for_design") and p.get("is_active", True)][:3]
+                from src.portfolio.portfolio_service import update_manual_portfolio_selection
+                update_manual_portfolio_selection(conn, int(detail_id), design_ids)
+            st.success("デザインポートフォリオを選択しました。")
+            st.rerun()
+
+        if existing_drafts and app_action_cols[3].button("コピー済みにする", key=f"copy_{detail_id}"):
+            with session() as conn:
+                copy_application(conn, existing_drafts[0]["id"])
+            st.success("コピー日時を記録しました。")
+            st.rerun()
+
+        nav_cols = st.columns(2)
+        with nav_cols[0]:
+            try:
+                st.page_link("pages/9_営業文一覧.py", label="営業文一覧を開く", icon="📝")
+            except Exception:
+                st.caption("「営業文一覧」ページから詳細を確認できます。")
+        with nav_cols[1]:
+            try:
+                st.page_link("pages/10_応募前確認.py", label="応募前確認画面を開く", icon="✅")
+            except Exception:
+                st.caption("「応募前確認」ページから最終確認ができます。")

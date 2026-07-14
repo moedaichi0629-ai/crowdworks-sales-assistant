@@ -278,4 +278,194 @@ DEFAULT_ANALYSIS_SETTINGS = {
     "min_client_rating": 0.0,
     "require_identity_verified": False,
     "rule_based_only": DEFAULT_AI_PROVIDER == AI_PROVIDER_NONE,
+    # 営業文生成用（案件分析用とはモデルのみ別設定可能。プロバイダー・タイムアウト等は共通）
+    "application_ai_models": None,  # None の場合は起動時に DEFAULT_APPLICATION_MODELS を使用
+    "application_max_tokens": 2000,
+    "application_bulk_max_count": 5,
+    "application_daily_limit": 30,
+}
+
+# =============================================================================
+# 第3段階: 営業文自動生成・ポートフォリオ自動選択・料金/納期提案関連の設定
+# =============================================================================
+
+# --- 営業文生成用モデル（案件分析用モデルとは別に設定可能） ------------------------
+DEFAULT_APPLICATION_MODELS = {
+    AI_PROVIDER_OPENAI: os.getenv("APPLICATION_OPENAI_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini")),
+    AI_PROVIDER_ANTHROPIC: os.getenv("APPLICATION_ANTHROPIC_MODEL", os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")),
+    AI_PROVIDER_GEMINI: os.getenv("APPLICATION_GEMINI_MODEL", os.getenv("GEMINI_MODEL", "gemini-1.5-flash")),
+}
+
+APPLICATION_PROMPT_VERSION = "v1"
+
+# --- 営業文タイプ（トーン） ------------------------------------------------------
+TONE_STANDARD = "標準"
+TONE_SHORT = "短め"
+TONE_POLITE = "丁寧"
+TONE_ENTHUSIASTIC = "熱意重視"
+TONE_TECHNICAL = "技術説明重視"
+TONE_ACHIEVEMENT = "実績重視"
+TONE_PROPOSAL = "提案重視"
+TONE_SINCERE_BEGINNER = "初心者らしい誠実さ重視"
+TONE_DESIGN = "デザイン案件向け"
+TONE_AI_DEV = "AI・開発案件向け"
+TONE_AUTOMATION = "業務自動化案件向け"
+TONE_WEBSITE = "ホームページ制作案件向け"
+TONE_DATA_ENTRY = "データ入力・リサーチ案件向け"
+TONE_SNS_DESIGN = "SNS・デザイン案件向け"
+TONE_BANNER = "バナー・サムネイル制作向け"
+TONE_LOGO_PRINT = "ロゴ・印刷物制作向け"
+TONE_AI_DESIGN = "AI×デザイン複合案件向け"
+
+GENERATION_TONES = [
+    TONE_STANDARD, TONE_SHORT, TONE_POLITE, TONE_ENTHUSIASTIC, TONE_TECHNICAL,
+    TONE_ACHIEVEMENT, TONE_PROPOSAL, TONE_SINCERE_BEGINNER, TONE_DESIGN, TONE_AI_DEV,
+    TONE_AUTOMATION, TONE_WEBSITE, TONE_DATA_ENTRY, TONE_SNS_DESIGN, TONE_BANNER,
+    TONE_LOGO_PRINT, TONE_AI_DESIGN,
+]
+
+# --- 営業文の長さ ----------------------------------------------------------------
+LENGTH_SHORT = "短文"
+LENGTH_STANDARD = "標準"
+LENGTH_DETAILED = "詳細"
+LENGTH_MATCH_JOB = "案件指定に合わせる"
+LENGTH_TYPES = [LENGTH_SHORT, LENGTH_STANDARD, LENGTH_DETAILED, LENGTH_MATCH_JOB]
+
+LENGTH_CHAR_RANGES = {
+    LENGTH_SHORT: (300, 500),
+    LENGTH_STANDARD: (500, 800),
+    LENGTH_DETAILED: (800, 1200),
+    LENGTH_MATCH_JOB: (300, 1200),
+}
+DEFAULT_MAX_APPLICATION_CHARS = 1400  # これを超えた場合は自動で要約版を作成する
+
+# --- 応募準備ステータス ------------------------------------------------------------
+PREP_STATUS_NONE = "未作成"
+PREP_STATUS_GENERATING = "生成中"
+PREP_STATUS_DRAFT = "下書き"
+PREP_STATUS_NEEDS_REVIEW = "要確認"
+PREP_STATUS_EDITING = "修正中"
+PREP_STATUS_READY = "応募準備完了"
+PREP_STATUS_COPIED = "コピー済み"
+PREP_STATUS_APPLIED = "応募済み"
+PREP_STATUS_ON_HOLD = "保留"
+PREP_STATUS_SKIPPED = "見送り"
+
+PREPARATION_STATUSES = [
+    PREP_STATUS_NONE, PREP_STATUS_GENERATING, PREP_STATUS_DRAFT, PREP_STATUS_NEEDS_REVIEW,
+    PREP_STATUS_EDITING, PREP_STATUS_READY, PREP_STATUS_COPIED, PREP_STATUS_APPLIED,
+    PREP_STATUS_ON_HOLD, PREP_STATUS_SKIPPED,
+]
+
+# --- ポートフォリオ区分 ------------------------------------------------------------
+PORTFOLIO_TYPE_DEVELOPMENT = "development"
+PORTFOLIO_TYPE_DESIGN = "design"
+PORTFOLIO_TYPE_GENERAL = "general"
+PORTFOLIO_TYPES = [PORTFOLIO_TYPE_DEVELOPMENT, PORTFOLIO_TYPE_DESIGN, PORTFOLIO_TYPE_GENERAL]
+PORTFOLIO_TYPE_LABELS_JA = {
+    PORTFOLIO_TYPE_DEVELOPMENT: "AI・開発", PORTFOLIO_TYPE_DESIGN: "デザイン", PORTFOLIO_TYPE_GENERAL: "総合",
+}
+
+# 案件カテゴリ判定用キーワード（デザイン系 / 開発系 / AI×デザイン複合系）
+DEFAULT_DESIGN_JOB_KEYWORDS = [
+    "バナー制作", "バナー", "SNS投稿画像", "Instagram投稿画像", "YouTubeサムネイル", "サムネイル",
+    "広告クリエイティブ", "チラシ", "名刺", "ショップカード", "ロゴ", "資料デザイン", "スライドデザイン",
+    "Webデザイン", "LPデザイン", "Illustrator", "Photoshop", "画像制作", "グラフィックデザイン",
+]
+DEFAULT_DEVELOPMENT_JOB_KEYWORDS = [
+    "AIツール開発", "Webアプリ開発", "API連携", "Python", "React", "Streamlit", "Dify", "ChatGPT",
+    "OpenAI API", "Google API", "LINE連携", "業務自動化", "ホームページ実装", "システム開発",
+]
+DEFAULT_AI_DESIGN_JOB_KEYWORDS = [
+    "AIを使用した画像制作", "AIデザイン", "AIを使ったSNS制作", "Webサイトのデザインと実装",
+    "LPのデザインとコーディング", "SNS運用と投稿画像制作", "AIを活用した資料作成", "デザイン業務の自動化",
+]
+
+# --- クライアント名・応募機密情報保護対象キーワード（営業文へ含めない） -----------------
+FORBIDDEN_CONTENT_KEYWORDS = [
+    "パスワード", "APIキー", "秘密鍵", "クレジットカード", "口座番号", "マイナンバー",
+]
+
+# --- 営業文生成を停止する危険カテゴリ（危険案件判定に加えて営業文固有の停止条件） ----------
+APPLICATION_STOP_KEYWORD_CATEGORIES = {
+    "成人向け・ギャンブル・投資勧誘": ["成人向け", "アダルト", "ギャンブル", "カジノ", "投資の勧誘", "仮想通貨投資"],
+    "教材購入・初期費用が必要": ["教材購入", "教材費", "初期費用", "登録費用", "保証金が必要", "入会金"],
+    "無報酬作業のみ": ["無報酬でテスト", "無償トライアル", "無料お試し作業", "報酬は発生しません"],
+    "アカウント貸与・虚偽レビュー・規約違反": [
+        "アカウントの貸し借り", "アカウント貸与", "やらせレビュー", "サクラ投稿", "虚偽のレビュー", "水増し",
+    ],
+    "著作権・素材ライセンス違反": ["無断転載", "トレース", "他者の作品をそのまま", "著作権を気にせず", "素材の無断使用"],
+}
+APPLICATION_MIN_SAFETY_SCORE = 40  # これ未満の安全度では営業文生成を停止する
+APPLICATION_MIN_BODY_CHARS = 20
+
+# --- 応募金額提案の初期設定 ---------------------------------------------------------
+DEFAULT_PRICING_SETTINGS = {
+    "base_hourly_rate_yen": 1200,
+    "ai_api_hourly_rate_min": 1200,
+    "ai_api_hourly_rate_max": 2000,
+    "website_minimum_price_yen": 10000,
+    "minimum_order_price_yen": 3000,
+    "standard_revision_count": 2,
+    "rush_fee_addable": True,
+    "external_api_cost_policy": "クライアント負担または別途相談",
+    "paid_material_cost_policy": "クライアント負担または事前相談",
+    "avoid_extreme_discount": True,
+    "category_price_notes": {
+        "バナー制作": "内容と枚数に応じて設定",
+        "SNS投稿画像": "枚数とテンプレート数に応じて設定",
+        "YouTubeサムネイル": "内容に応じて設定",
+        "ロゴ制作": "修正回数・提案数に応じて設定",
+        "名刺・チラシ": "片面・両面や入稿データの有無で調整",
+        "データ入力": "案件相場に応じる",
+    },
+}
+
+# --- 納期提案の初期設定 -------------------------------------------------------------
+DEFAULT_DELIVERY_SETTINGS = {
+    "daily_available_hours_default": 2.5,
+    "buffer_days_min": 1,
+    "buffer_days_standard": 2,
+    "revision_buffer_days": 1,
+    "design_draft_buffer_days": 1,
+    "material_wait_buffer_days": 1,
+    "api_review_buffer_days": 2,
+}
+
+# --- 営業文構成（見出し表示の有無は画面から設定可能） ---------------------------------
+APPLICATION_MESSAGE_SECTIONS = [
+    "opening", "understanding", "matching_reason", "skills_to_highlight", "portfolio",
+    "proposed_approach", "delivery", "price", "client_questions", "questions_for_client",
+    "contact_policy", "closing",
+]
+
+# --- クライアント質問抽出用パターン(本文中の代表的な質問見出し) ------------------------
+DEFAULT_CLIENT_QUESTION_MARKERS = [
+    "自己紹介", "実績", "使用経験", "稼働時間", "対応可能時間", "希望金額", "希望単価", "納期",
+    "応募理由", "過去の制作物", "使用できるツール", "Illustrator", "Photoshop", "デザインポートフォリオ",
+    "GitHub", "継続対応", "週あたりの作業時間", "ポートフォリオ",
+]
+
+# --- 営業文AI出力の既定値(不足項目の安全な補完に使用) ---------------------------------
+DEFAULT_APPLICATION_AI_RESPONSE = {
+    "application_title": "",
+    "opening": "",
+    "understanding": "",
+    "matching_reason": "",
+    "skills_to_highlight": [],
+    "portfolio_ids": [],
+    "portfolio_reasons": [],
+    "proposed_approach": [],
+    "proposed_price": 0,
+    "price_reason": "",
+    "proposed_delivery_days": 0,
+    "delivery_reason": "",
+    "answers_to_client_questions": [],
+    "questions_for_client": [],
+    "closing": "",
+    "full_message": "",
+    "short_message": "",
+    "warnings": [],
+    "missing_information": [],
+    "confidence": 0,
 }

@@ -107,6 +107,8 @@ def init_db(db_path: Path | str = DB_PATH) -> None:
         conn.executescript(SCHEMA_SQL)
     logger.info("データベースを初期化しました: %s", db_path)
 
-    from src.migrations.add_job_analysis_tables import run_migration
+    from src.migrations.add_job_analysis_tables import run_migration as run_analysis_migration
+    from src.migrations.add_application_draft_tables import run_migration as run_application_migration
 
-    run_migration(db_path)
+    run_analysis_migration(db_path)
+    run_application_migration(db_path)
