@@ -12,7 +12,7 @@ from src.logger import get_logger
 from src.repositories import (
     get_all_settings,
     get_job,
-    list_jobs,
+    get_jobs_with_latest_analysis,
     update_favorite,
     update_memo,
     update_status_bulk,
@@ -25,8 +25,14 @@ init_db()
 st.title("📄 案件一覧")
 
 with session() as conn:
-    jobs = list_jobs(conn)
+    jobs = get_jobs_with_latest_analysis(conn)
     settings = get_all_settings(conn)
+
+PRIORITY_BADGES = {
+    "最優先": "🌟最優先", "優先": "🟢優先", "応募候補": "🔵応募候補",
+    "要確認": "🟡要確認", "見送り候補": "⚪見送り候補",
+}
+RISK_BADGES = {"low": "🟢低", "medium": "🟡中", "high": "🟠高", "critical": "🔴非常に高い"}
 
 if not jobs:
     st.info("まだ案件が登録されていません。「案件追加」ページから登録してください。")
@@ -85,15 +91,30 @@ filtered_df = apply_sort(filtered_df, sort_label)
 st.caption(f"{len(filtered_df)}件 / 全{len(df)}件")
 
 # ============================= 一覧表示 =============================
+display_df = filtered_df.copy()
+display_df["応募優先度"] = display_df.get("application_priority", pd.Series(dtype=object)).apply(
+    lambda p: PRIORITY_BADGES.get(p, "未分析") if p else "未分析"
+)
+display_df["危険レベル"] = display_df.get("risk_level", pd.Series(dtype=object)).apply(
+    lambda r: RISK_BADGES.get(r, "-") if r else "-"
+)
+display_df["分析状況"] = display_df.get("analysis_id", pd.Series(dtype=object)).apply(
+    lambda v: "分析済み" if pd.notna(v) else "未分析"
+)
+
 display_columns = [
     "id", "is_favorite", "collected_at", "title", "job_type", "category", "budget_text",
     "published_at", "deadline", "applicant_count", "client_name", "client_rating",
     "identity_verified", "matched_keyword", "url", "status", "memo",
+    "total_score", "ai_suitability_score", "safety_score", "応募優先度", "difficulty",
+    "危険レベル", "分析状況", "analyzed_at",
 ]
-display_columns = [c for c in display_columns if c in filtered_df.columns]
+display_columns = [c for c in display_columns if c in display_df.columns]
+
+st.caption("スコア・優先度は「AI案件分析」ページで分析を実行すると表示されます（未分析の案件は「未分析」と表示されます）。")
 
 st.dataframe(
-    filtered_df[display_columns],
+    display_df[display_columns],
     width="stretch",
     hide_index=True,
     column_config={
@@ -114,6 +135,11 @@ st.dataframe(
         "url": st.column_config.LinkColumn("案件URL", display_text="開く"),
         "status": "ステータス",
         "memo": "メモ",
+        "total_score": st.column_config.NumberColumn("総合スコア"),
+        "ai_suitability_score": st.column_config.NumberColumn("AI適合度"),
+        "safety_score": st.column_config.NumberColumn("安全度"),
+        "difficulty": "難易度",
+        "analyzed_at": "分析日時",
     },
 )
 

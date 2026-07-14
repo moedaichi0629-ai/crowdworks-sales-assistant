@@ -60,13 +60,18 @@ def analyze_job(
     rule_result = analyze_rule_based(
         job, skills, portfolios, difficult_conditions, exclude_keywords,
         weights=analysis_settings.get("rule_weights"),
+        bonus_keywords=analysis_settings.get("bonus_keywords"),
+        penalty_keywords=analysis_settings.get("penalty_keywords"),
     )
     safety_rule = analyze_safety_rule_based(job, analysis_settings.get("danger_keyword_categories"))
 
     provider = ai_client.provider_name if ai_client and not rule_only else "rule_only"
     model = ai_client.model if ai_client and not rule_only else None
 
-    content_hash = compute_content_hash(job, profile.get("updated_at"), PROMPT_VERSION, provider, model)
+    content_hash = compute_content_hash(
+        job, profile.get("updated_at"), PROMPT_VERSION, provider, model,
+        profile_version=profile.get("version"),
+    )
 
     if not force_reanalyze:
         cached = get_cached_analysis(conn, job["id"], content_hash)

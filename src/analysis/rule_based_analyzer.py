@@ -37,6 +37,8 @@ def analyze_rule_based(
     difficult_conditions: list[str],
     exclude_keywords: list[str],
     weights: dict | None = None,
+    bonus_keywords: list[str] | None = None,
+    penalty_keywords: list[str] | None = None,
 ) -> dict:
     """ルールベース一次判定を実行する。
 
@@ -87,6 +89,15 @@ def analyze_rule_based(
     excluded_hits = [k for k in exclude_keywords if k and k in text]
     if excluded_hits or job.get("excluded_keyword"):
         add("除外キーワードに該当", -w["exclude_keyword_penalty"])
+
+    # --- 加点・減点キーワード（設定画面で編集可能） ---
+    bonus_hits = [k for k in (bonus_keywords or []) if k and k in text]
+    if bonus_hits:
+        add(f"加点キーワードに該当（{', '.join(bonus_hits[:3])}）", min(len(bonus_hits) * RULE_KEYWORD_BONUS_WEIGHT, RULE_KEYWORD_BONUS_MAX))
+
+    penalty_hits = [k for k in (penalty_keywords or []) if k and k in text]
+    if penalty_hits:
+        add(f"減点キーワードに該当（{', '.join(penalty_hits[:3])}）", -min(len(penalty_hits) * RULE_KEYWORD_PENALTY_WEIGHT, RULE_KEYWORD_PENALTY_MAX))
 
     # --- 予算の妥当性 ---
     budget_max = job.get("budget_max")

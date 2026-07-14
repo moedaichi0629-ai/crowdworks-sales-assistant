@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     basic_info_json TEXT,
     preferred_conditions_json TEXT,
     difficult_conditions_json TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -128,6 +129,13 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, column_def: str) -> None:
+    """指定テーブルに列が存在しない場合のみ追加する（何度実行しても安全）。"""
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_def}")
+
+
 def run_migration(db_path: Path | str = DB_PATH) -> dict:
     """AI案件分析用テーブルを作成し、初期プロフィールを未登録の場合のみ投入する。
 
@@ -139,6 +147,8 @@ def run_migration(db_path: Path | str = DB_PATH) -> dict:
     with session(db_path) as conn:
         already_had_job_analyses = _table_exists(conn, "job_analyses")
         conn.executescript(ANALYSIS_SCHEMA_SQL)
+        if _table_exists(conn, "user_profiles"):
+            _ensure_column(conn, "user_profiles", "version", "version INTEGER NOT NULL DEFAULT 1")
 
     logger.info("データベースマイグレーションを実行しました: add_job_analysis_tables")
 

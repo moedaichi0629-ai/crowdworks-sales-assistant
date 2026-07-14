@@ -11,14 +11,22 @@ def compute_content_hash(
     prompt_version: str,
     provider: str,
     model: str | None,
+    profile_version: int | None = None,
 ) -> str:
-    """案件内容・プロフィール更新日時・プロンプト版・AIプロバイダー/モデルからハッシュ値を作る。"""
+    """案件内容・プロフィール更新日時(+バージョン)・プロンプト版・AIプロバイダー/モデルからハッシュ値を作る。
+
+    `profile_version` はプロフィール更新のたびに増加するカウンタ。
+    `updated_at` は秒単位の解像度しかなく、短時間に連続更新された場合に
+    同一時刻となりキャッシュが誤って再利用される恐れがあるため、
+    より確実な変更検知のために version も合わせてハッシュへ含める。
+    """
     parts = [
         str(job.get("title") or ""),
         str(job.get("body") or job.get("description") or ""),
         str(job.get("budget_text") or ""),
         str(job.get("deadline") or ""),
         str(profile_updated_at or ""),
+        str(profile_version if profile_version is not None else ""),
         str(prompt_version or ""),
         str(provider or ""),
         str(model or ""),

@@ -429,7 +429,7 @@ def update_profile(conn: sqlite3.Connection, profile_id: int, data: dict) -> Non
     columns = [c for c in data if c in allowed]
     if not columns:
         return
-    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", version = version + 1, updated_at = ?"
     values = [data[c] for c in columns] + [now, profile_id]
     conn.execute(f"UPDATE user_profiles SET {set_clause} WHERE id = ?", values)
     logger.info("スキルプロフィールを更新しました: profile_id=%s", profile_id)
