@@ -1599,6 +1599,20 @@ def list_client_responses(conn: sqlite3.Connection, application_record_id: int) 
     return [_client_response_row_to_dict(r) for r in rows]
 
 
+def list_all_client_responses(conn: sqlite3.Connection) -> list[dict]:
+    """出力・分析用: 全返信履歴を案件情報と結合して返す。"""
+    rows = conn.execute(
+        """
+        SELECT cr.*, r.job_id, r.applied_at, j.title AS job_title
+        FROM client_responses cr
+        JOIN application_records r ON r.id = cr.application_record_id
+        JOIN jobs j ON j.id = r.job_id
+        ORDER BY cr.received_at
+        """
+    ).fetchall()
+    return [_client_response_row_to_dict(r) for r in rows]
+
+
 def list_client_responses_by_status(conn: sqlite3.Connection, statuses: list[str]) -> list[dict]:
     """返信管理画面用: 指定した対応状況の返信を、案件情報と結合して返す。"""
     placeholders = ", ".join(["?"] * len(statuses))
@@ -1834,6 +1848,20 @@ def list_application_results(conn: sqlite3.Connection, application_record_id: in
     return [_result_row_to_dict(r) for r in rows]
 
 
+def list_all_application_results(conn: sqlite3.Connection) -> list[dict]:
+    """出力・分析用: 全採用・不採用・辞退結果を案件情報と結合して返す。"""
+    rows = conn.execute(
+        """
+        SELECT res.*, r.job_id, r.applied_at, j.title AS job_title
+        FROM application_results res
+        JOIN application_records r ON r.id = res.application_record_id
+        JOIN jobs j ON j.id = r.job_id
+        ORDER BY res.id
+        """
+    ).fetchall()
+    return [_result_row_to_dict(r) for r in rows]
+
+
 # =============================================================================
 # 第4段階Part2: follow_up_tasks（フォローアップ管理）
 # =============================================================================
@@ -1925,5 +1953,141 @@ def list_timeline(conn: sqlite3.Connection, application_record_id: int) -> list[
     rows = conn.execute(
         "SELECT * FROM application_timeline WHERE application_record_id = ? ORDER BY event_at, id",
         (application_record_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# =============================================================================
+# 第4段階Part3: 営業成績分析用の集計データ取得
+# =============================================================================
+
+_ANALYTICS_JSON_LIST_FIELDS = ["portfolio_snapshot", "portfolio_urls"]
+_ANALYTICS_JSON_DICT_FIELDS = ["client_snapshot", "job_snapshot"]
+
+
+def list_application_analytics_base(conn: sqlite3.Connection) -> list[dict]:
+    """営業成績分析の基礎となる、応募履歴1件ごとの集約データを返す（有効な応募のみ）。
+
+    返信・面談は応募単位のユニーク件数（response_count/interview_count）で数えられるよう、
+    件数と最初の発生日時をあらかじめ集約して1行にまとめる。
+    """
+    rows = conn.execute(
+        """
+        SELECT r.*,
+               (SELECT COUNT(*) FROM client_responses cr WHERE cr.application_record_id = r.id) AS response_count,
+               (SELECT MIN(cr2.received_at) FROM client_responses cr2 WHERE cr2.application_record_id = r.id) AS first_response_at,
+               (SELECT COUNT(*) FROM interviews iv WHERE iv.application_record_id = r.id) AS interview_count,
+               (SELECT MIN(iv2.scheduled_start) FROM interviews iv2 WHERE iv2.application_record_id = r.id) AS first_interview_at,
+               res.result_type, res.result_date, res.hired_at, res.contract_amount,
+               res.contract_type AS result_contract_type, res.client_reason, res.inferred_reason,
+               res.improvement_points_json AS result_improvement_points_json, res.withdrawal_reason,
+               res.is_recurring AS result_is_recurring
+        FROM application_records r
+        LEFT JOIN (
+            SELECT ar1.* FROM application_results ar1
+            WHERE ar1.id = (
+                SELECT ar2.id FROM application_results ar2
+                WHERE ar2.application_record_id = ar1.application_record_id
+                ORDER BY ar2.id DESC LIMIT 1
+            )
+        ) res ON res.application_record_id = r.id
+        WHERE r.is_active = 1
+        ORDER BY r.applied_at
+        """
+    ).fetchall()
+
+    results = []
+    for row in rows:
+        data = dict(row)
+        for field in _ANALYTICS_JSON_LIST_FIELDS:
+            key = f"{field}_json"
+            try:
+                data[field] = json.loads(data[key]) if data.get(key) else []
+            except (TypeError, json.JSONDecodeError):
+                data[field] = []
+        for field in _ANALYTICS_JSON_DICT_FIELDS:
+            key = f"{field}_json"
+            try:
+                data[field] = json.loads(data[key]) if data.get(key) else {}
+            except (TypeError, json.JSONDecodeError):
+                data[field] = {}
+        try:
+            data["improvement_points"] = (
+                json.loads(data["result_improvement_points_json"]) if data.get("result_improvement_points_json") else []
+            )
+        except (TypeError, json.JSONDecodeError):
+            data["improvement_points"] = []
+        data["is_active"] = bool(data.get("is_active"))
+        data["is_reapplication"] = bool(data.get("is_reapplication"))
+        results.append(data)
+    return results
+
+
+def get_daily_application_counts(conn: sqlite3.Connection) -> dict:
+    """日付(YYYY-MM-DD)ごとの応募数を返す。"""
+    rows = conn.execute(
+        "SELECT substr(applied_at, 1, 10) AS d, COUNT(*) AS c FROM application_records WHERE is_active = 1 GROUP BY d"
+    ).fetchall()
+    return {r["d"]: r["c"] for r in rows}
+
+
+def get_portfolio_average_relevance(conn: sqlite3.Connection) -> dict:
+    """ポートフォリオIDごとの平均関連度スコア（選択されたもののみ）を返す。"""
+    rows = conn.execute(
+        "SELECT portfolio_id, AVG(relevance_score) AS avg_score FROM portfolio_matches "
+        "WHERE is_selected = 1 GROUP BY portfolio_id"
+    ).fetchall()
+    return {r["portfolio_id"]: round(r["avg_score"], 1) for r in rows if r["avg_score"] is not None}
+
+
+def count_jobs_collected_in_range(conn: sqlite3.Connection, date_from: str, date_to: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM jobs WHERE substr(collected_at, 1, 10) BETWEEN ? AND ?", (date_from, date_to),
+    ).fetchone()[0]
+
+
+def count_jobs_analyzed_in_range(conn: sqlite3.Connection, date_from: str, date_to: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(DISTINCT job_id) FROM job_analyses WHERE substr(created_at, 1, 10) BETWEEN ? AND ?",
+        (date_from, date_to),
+    ).fetchone()[0]
+
+
+def count_candidates_in_range(conn: sqlite3.Connection, date_from: str, date_to: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM daily_candidates WHERE target_date BETWEEN ? AND ? AND candidate_status = '候補'",
+        (date_from, date_to),
+    ).fetchone()[0]
+
+
+def count_drafts_created_in_range(conn: sqlite3.Connection, date_from: str, date_to: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM application_drafts WHERE substr(created_at, 1, 10) BETWEEN ? AND ?",
+        (date_from, date_to),
+    ).fetchone()[0]
+
+
+def count_drafts_ready_in_range(conn: sqlite3.Connection, date_from: str, date_to: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM application_drafts WHERE preparation_status = '応募準備完了' "
+        "AND substr(updated_at, 1, 10) BETWEEN ? AND ?",
+        (date_from, date_to),
+    ).fetchone()[0]
+
+
+def list_jobs_with_analysis_for_scoring(conn: sqlite3.Connection) -> list[dict]:
+    """スコア帯別分析用: 分析済みの全案件（最新の分析結果付き）を返す。"""
+    rows = conn.execute(
+        """
+        SELECT j.id AS job_id, a.total_score, a.ai_suitability_score, a.safety_score
+        FROM jobs j
+        JOIN (
+            SELECT ja1.* FROM job_analyses ja1
+            WHERE ja1.id = (
+                SELECT ja2.id FROM job_analyses ja2
+                WHERE ja2.job_id = ja1.job_id ORDER BY ja2.created_at DESC, ja2.id DESC LIMIT 1
+            )
+        ) a ON a.job_id = j.id
+        """
     ).fetchall()
     return [dict(r) for r in rows]

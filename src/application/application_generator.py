@@ -227,5 +227,8 @@ def generate_application(
         "analysis_error": analysis_error,
         "client_questions": client_questions,
         "candidate_portfolios": candidates,
+        # application_drafts テーブル(repositories.APPLICATION_DRAFT_JSON_FIELDS)は
+        # "selected_portfolio_ids" という列名を期待するため、ここでエイリアスしておく。
+        "selected_portfolio_ids": result.get("portfolio_ids", []),
     })
     return result
