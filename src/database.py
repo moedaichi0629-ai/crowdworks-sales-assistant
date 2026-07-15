@@ -109,6 +109,10 @@ def init_db(db_path: Path | str = DB_PATH) -> None:
 
     from src.migrations.add_job_analysis_tables import run_migration as run_analysis_migration
     from src.migrations.add_application_draft_tables import run_migration as run_application_migration
+    from src.migrations.add_daily_application_tables import run_migration as run_daily_migration
+    from src.migrations.extend_application_history_tables import run_migration as run_history_migration
 
     run_analysis_migration(db_path)
     run_application_migration(db_path)
+    run_daily_migration(db_path)
+    run_history_migration(db_path)

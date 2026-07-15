@@ -1060,3 +1060,870 @@ def save_application_checklist(conn: sqlite3.Connection, draft_id: int, data: di
             [draft_id, *values.values(), completed_at, now],
         )
     logger.info("応募前確認チェックリストを保存しました: draft_id=%s 完了=%s", draft_id, all_checked)
+
+
+# =============================================================================
+# 第4段階Part1: daily_application_goals（1日あたりの応募目標）
+# =============================================================================
+
+_DAILY_GOAL_JSON_FIELDS = ["allowed_risk_levels", "score_weights"]
+_DAILY_GOAL_BOOL_FIELDS = ["prioritize_verified_client", "prioritize_ready_drafts", "prioritize_application_written"]
+_DAILY_GOAL_COLUMNS = [
+    "target_date", "target_count", "maximum_count", "ai_development_target", "design_target",
+    "other_target", "minimum_total_score", "minimum_ai_score", "minimum_safety_score",
+    "allowed_risk_levels_json", "new_arrival_hours", "maximum_applicant_count", "minimum_client_rating",
+    "prioritize_verified_client", "prioritize_ready_drafts", "prioritize_application_written",
+    "score_weights_json",
+]
+
+
+def _daily_goal_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if row is None:
+        return None
+    data = dict(row)
+    for field in _DAILY_GOAL_JSON_FIELDS:
+        key = f"{field}_json"
+        if key in data:
+            try:
+                data[field] = json.loads(data[key]) if data[key] else ({} if field == "score_weights" else [])
+            except (TypeError, json.JSONDecodeError):
+                data[field] = {} if field == "score_weights" else []
+    for field in _DAILY_GOAL_BOOL_FIELDS:
+        if field in data:
+            data[field] = bool(data[field])
+    return data
+
+
+def get_daily_goal(conn: sqlite3.Connection, target_date: str) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT * FROM daily_application_goals WHERE target_date = ?", (target_date,)
+    ).fetchone()
+    return _daily_goal_row_to_dict(row)
+
+
+def list_daily_goals(conn: sqlite3.Connection, limit: int = 60) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM daily_application_goals ORDER BY target_date DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [_daily_goal_row_to_dict(r) for r in rows]
+
+
+def create_daily_goal(conn: sqlite3.Connection, target_date: str, data: dict) -> int:
+    """指定日の応募目標を新規作成する（target_dateは重複不可）。"""
+    now = now_jst_str()
+    data = dict(data)
+    data["target_date"] = target_date
+    for field in _DAILY_GOAL_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+    for field in _DAILY_GOAL_BOOL_FIELDS:
+        if field in data and data[field] is not None:
+            data[field] = int(data[field])
+
+    columns = [c for c in _DAILY_GOAL_COLUMNS if c in data]
+    values = [data[c] for c in columns]
+    columns += ["created_at", "updated_at"]
+    values += [now, now]
+
+    placeholders = ", ".join(["?"] * len(columns))
+    cursor = conn.execute(
+        f"INSERT INTO daily_application_goals ({', '.join(columns)}) VALUES ({placeholders})", values,
+    )
+    logger.info("日次応募目標を作成しました: target_date=%s", target_date)
+    return cursor.lastrowid
+
+
+def update_daily_goal(conn: sqlite3.Connection, target_date: str, data: dict) -> None:
+    data = dict(data)
+    now = now_jst_str()
+    for field in _DAILY_GOAL_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+    for field in _DAILY_GOAL_BOOL_FIELDS:
+        if field in data and data[field] is not None:
+            data[field] = int(data[field])
+
+    columns = [c for c in _DAILY_GOAL_COLUMNS if c in data and c != "target_date"]
+    if not columns:
+        return
+    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+    values = [data[c] for c in columns] + [now, target_date]
+    conn.execute(f"UPDATE daily_application_goals SET {set_clause} WHERE target_date = ?", values)
+    logger.info("日次応募目標を更新しました: target_date=%s", target_date)
+
+
+# =============================================================================
+# 第4段階Part1: daily_selection_settings（応募目標の既定値・デイリー優先スコアの重み）
+# =============================================================================
+
+def get_daily_selection_setting(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
+    row = conn.execute(
+        "SELECT setting_value FROM daily_selection_settings WHERE setting_key = ?", (key,)
+    ).fetchone()
+    if row is None:
+        return default
+    try:
+        return json.loads(row["setting_value"])
+    except (TypeError, json.JSONDecodeError):
+        return row["setting_value"]
+
+
+def get_all_daily_selection_settings(conn: sqlite3.Connection) -> dict:
+    settings: dict = {}
+    rows = conn.execute("SELECT setting_key, setting_value FROM daily_selection_settings").fetchall()
+    for row in rows:
+        try:
+            settings[row["setting_key"]] = json.loads(row["setting_value"])
+        except (TypeError, json.JSONDecodeError):
+            settings[row["setting_key"]] = row["setting_value"]
+    return settings
+
+
+def save_daily_selection_setting(conn: sqlite3.Connection, key: str, value: Any) -> None:
+    now = now_jst_str()
+    serialized = json.dumps(value, ensure_ascii=False)
+    existing = conn.execute(
+        "SELECT id FROM daily_selection_settings WHERE setting_key = ?", (key,)
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE daily_selection_settings SET setting_value = ?, updated_at = ? WHERE setting_key = ?",
+            (serialized, now, key),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO daily_selection_settings (setting_key, setting_value, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            (key, serialized, now, now),
+        )
+    logger.info("応募目標の既定値・スコア設定を保存しました: key=%s", key)
+
+
+# =============================================================================
+# 第4段階Part1: daily_candidates（本日の応募候補）
+# =============================================================================
+
+_DAILY_CANDIDATE_JSON_FIELDS = ["selection_reasons", "exclusion_reasons"]
+_DAILY_CANDIDATE_BOOL_FIELDS = ["is_manually_added", "is_manually_removed"]
+_DAILY_CANDIDATE_COLUMNS = [
+    "target_date", "job_id", "application_draft_id", "category_group", "daily_priority_score",
+    "rank_number", "selection_reasons_json", "exclusion_reasons_json", "candidate_status",
+    "is_manually_added", "is_manually_removed", "postponed_until", "user_memo",
+]
+
+
+def _daily_candidate_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if row is None:
+        return None
+    data = dict(row)
+    for field in _DAILY_CANDIDATE_JSON_FIELDS:
+        key = f"{field}_json"
+        if key in data:
+            try:
+                data[field] = json.loads(data[key]) if data[key] else []
+            except (TypeError, json.JSONDecodeError):
+                data[field] = []
+    for field in _DAILY_CANDIDATE_BOOL_FIELDS:
+        if field in data:
+            data[field] = bool(data[field])
+    return data
+
+
+def get_daily_candidates(conn: sqlite3.Connection, target_date: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT dc.*, j.title AS job_title, j.url AS job_url, j.category AS job_category,
+               j.budget_min, j.budget_max, j.budget_text, j.applicant_count, j.deadline,
+               j.published_at, j.collected_at, j.client_rating, j.identity_verified,
+               j.status AS job_status,
+               d.preparation_status, d.generation_type, d.application_message, d.short_message,
+               d.proposed_price AS draft_proposed_price,
+               d.proposed_delivery_days AS draft_proposed_delivery_days,
+               d.selected_portfolio_ids_json
+        FROM daily_candidates dc
+        JOIN jobs j ON j.id = dc.job_id
+        LEFT JOIN application_drafts d ON d.id = dc.application_draft_id
+        WHERE dc.target_date = ?
+        ORDER BY (dc.rank_number IS NULL), dc.rank_number, dc.daily_priority_score DESC
+        """,
+        (target_date,),
+    ).fetchall()
+    results = []
+    for row in rows:
+        data = _daily_candidate_row_to_dict(row)
+        try:
+            data["selected_portfolio_ids"] = (
+                json.loads(data["selected_portfolio_ids_json"]) if data.get("selected_portfolio_ids_json") else []
+            )
+        except (TypeError, json.JSONDecodeError):
+            data["selected_portfolio_ids"] = []
+        results.append(data)
+    return results
+
+
+def get_daily_candidate(conn: sqlite3.Connection, candidate_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM daily_candidates WHERE id = ?", (candidate_id,)).fetchone()
+    return _daily_candidate_row_to_dict(row)
+
+
+def get_daily_candidate_by_job(conn: sqlite3.Connection, target_date: str, job_id: int) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT * FROM daily_candidates WHERE target_date = ? AND job_id = ?", (target_date, job_id),
+    ).fetchone()
+    return _daily_candidate_row_to_dict(row)
+
+
+def upsert_daily_candidate(conn: sqlite3.Connection, target_date: str, job_id: int, data: dict) -> int:
+    """本日の候補を1件登録・更新する（target_date, job_idの組で一意）。"""
+    now = now_jst_str()
+    data = dict(data)
+    for field in _DAILY_CANDIDATE_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+    for field in _DAILY_CANDIDATE_BOOL_FIELDS:
+        if field in data and data[field] is not None:
+            data[field] = int(data[field])
+
+    existing = conn.execute(
+        "SELECT id FROM daily_candidates WHERE target_date = ? AND job_id = ?", (target_date, job_id),
+    ).fetchone()
+
+    if existing:
+        columns = [c for c in _DAILY_CANDIDATE_COLUMNS if c in data and c not in ("target_date", "job_id")]
+        if columns:
+            set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+            values = [data[c] for c in columns] + [now, existing["id"]]
+            conn.execute(f"UPDATE daily_candidates SET {set_clause} WHERE id = ?", values)
+        return existing["id"]
+
+    data["target_date"] = target_date
+    data["job_id"] = job_id
+    columns = [c for c in _DAILY_CANDIDATE_COLUMNS if c in data]
+    values = [data[c] for c in columns]
+    columns += ["selected_at", "updated_at"]
+    values += [now, now]
+    placeholders = ", ".join(["?"] * len(columns))
+    cursor = conn.execute(
+        f"INSERT INTO daily_candidates ({', '.join(columns)}) VALUES ({placeholders})", values,
+    )
+    return cursor.lastrowid
+
+
+def update_daily_candidate(conn: sqlite3.Connection, candidate_id: int, data: dict) -> None:
+    data = dict(data)
+    now = now_jst_str()
+    for field in _DAILY_CANDIDATE_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+    for field in _DAILY_CANDIDATE_BOOL_FIELDS:
+        if field in data and data[field] is not None:
+            data[field] = int(data[field])
+
+    columns = [c for c in _DAILY_CANDIDATE_COLUMNS if c in data]
+    if not columns:
+        return
+    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+    values = [data[c] for c in columns] + [now, candidate_id]
+    conn.execute(f"UPDATE daily_candidates SET {set_clause} WHERE id = ?", values)
+
+
+def delete_stale_daily_candidates(conn: sqlite3.Connection, target_date: str) -> int:
+    """再選定時に、アルゴリズムによる行（候補・対象外）のみを入れ替える。
+
+    手動追加・保留・見送り・除外・応募済みなど、ユーザーが明示的に操作した行は保持する。
+    """
+    cursor = conn.execute(
+        """
+        DELETE FROM daily_candidates
+        WHERE target_date = ? AND is_manually_added = 0
+          AND candidate_status IN ('候補', '対象外')
+        """,
+        (target_date,),
+    )
+    return cursor.rowcount
+
+
+def get_active_postponement(conn: sqlite3.Connection, job_id: int, target_date: str) -> Optional[str]:
+    """指定案件について、target_date時点でまだ有効な保留期限があれば返す（無ければNone）。"""
+    row = conn.execute(
+        """
+        SELECT postponed_until FROM daily_candidates
+        WHERE job_id = ? AND candidate_status = '保留' AND postponed_until IS NOT NULL
+        ORDER BY postponed_until DESC LIMIT 1
+        """,
+        (job_id,),
+    ).fetchone()
+    if row and row["postponed_until"] and row["postponed_until"] > target_date:
+        return row["postponed_until"]
+    return None
+
+
+# =============================================================================
+# 第4段階Part1: application_records（簡易応募記録）
+# 第4段階Part2: 正式な応募履歴（スナップショット・応募後ステータス・応募経路 等へ拡張）
+# =============================================================================
+
+_APPLICATION_RECORD_COLUMNS = [
+    "job_id", "application_draft_id", "application_version_id", "source_platform", "applied_at",
+    "contract_type", "proposed_price", "tax_type", "proposed_delivery_days", "proposed_delivery_date",
+    "sent_message", "sent_short_message", "generation_type", "tone",
+    "portfolio_snapshot_json", "portfolio_urls_json", "total_score_snapshot", "ai_score_snapshot",
+    "safety_score_snapshot", "daily_priority_score_snapshot", "applicant_count_snapshot",
+    "client_snapshot_json", "job_snapshot_json", "application_status", "current_response_status",
+    "next_action", "next_action_due_at", "is_over_limit", "over_limit_reason", "user_memo",
+    "is_active", "is_reapplication", "reapplication_reason",
+]
+
+_APPLICATION_RECORD_JSON_FIELDS = [
+    "portfolio_snapshot", "portfolio_urls", "client_snapshot", "job_snapshot",
+]
+_APPLICATION_RECORD_BOOL_FIELDS = ["is_over_limit", "is_active", "is_reapplication"]
+
+
+def _application_record_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if row is None:
+        return None
+    data = dict(row)
+    for field in _APPLICATION_RECORD_JSON_FIELDS:
+        key = f"{field}_json"
+        if key in data:
+            try:
+                data[field] = json.loads(data[key]) if data[key] else ([] if field in ("portfolio_snapshot", "portfolio_urls") else {})
+            except (TypeError, json.JSONDecodeError):
+                data[field] = [] if field in ("portfolio_snapshot", "portfolio_urls") else {}
+    for field in _APPLICATION_RECORD_BOOL_FIELDS:
+        if field in data:
+            data[field] = bool(data[field])
+    return data
+
+
+def create_application_record(conn: sqlite3.Connection, data: dict) -> int:
+    now = now_jst_str()
+    data = dict(data)
+    data.setdefault("applied_at", now)
+    data.setdefault("application_status", "応募済み")
+    data.setdefault("source_platform", "クラウドワークス")
+
+    for field in _APPLICATION_RECORD_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+    for field in _APPLICATION_RECORD_BOOL_FIELDS:
+        if field in data and data[field] is not None:
+            data[field] = int(data[field])
+
+    columns = [c for c in _APPLICATION_RECORD_COLUMNS if c in data]
+    values = [data[c] for c in columns]
+    columns += ["created_at", "updated_at"]
+    values += [now, now]
+    placeholders = ", ".join(["?"] * len(columns))
+    cursor = conn.execute(
+        f"INSERT INTO application_records ({', '.join(columns)}) VALUES ({placeholders})", values,
+    )
+    logger.info("応募を記録しました: job_id=%s", data.get("job_id"))
+    return cursor.lastrowid
+
+
+def update_application_record(conn: sqlite3.Connection, record_id: int, data: dict) -> None:
+    data = dict(data)
+    now = now_jst_str()
+    for field in _APPLICATION_RECORD_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+    for field in _APPLICATION_RECORD_BOOL_FIELDS:
+        if field in data and data[field] is not None:
+            data[field] = int(data[field])
+
+    columns = [c for c in _APPLICATION_RECORD_COLUMNS if c in data]
+    if not columns:
+        return
+    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+    values = [data[c] for c in columns] + [now, record_id]
+    conn.execute(f"UPDATE application_records SET {set_clause} WHERE id = ?", values)
+    logger.info("応募履歴を更新しました: record_id=%s", record_id)
+
+
+def get_application_record(conn: sqlite3.Connection, record_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM application_records WHERE id = ?", (record_id,)).fetchone()
+    return _application_record_row_to_dict(row)
+
+
+def get_application_records_for_date(conn: sqlite3.Connection, target_date: str) -> list[dict]:
+    """日本時間の応募日時をもとに、指定日の応募記録を取得する。"""
+    rows = conn.execute(
+        "SELECT * FROM application_records WHERE substr(applied_at, 1, 10) = ? ORDER BY applied_at",
+        (target_date,),
+    ).fetchall()
+    return [_application_record_row_to_dict(r) for r in rows]
+
+
+def count_applications_for_date(conn: sqlite3.Connection, target_date: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM application_records WHERE substr(applied_at, 1, 10) = ?", (target_date,),
+    ).fetchone()[0]
+
+
+def list_application_records_for_job(conn: sqlite3.Connection, job_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM application_records WHERE job_id = ? ORDER BY applied_at DESC", (job_id,),
+    ).fetchall()
+    return [_application_record_row_to_dict(r) for r in rows]
+
+
+def count_active_application_records_for_job(conn: sqlite3.Connection, job_id: int) -> int:
+    """重複応募検知に使用する: 有効な（無効化されていない）応募履歴の件数。"""
+    return conn.execute(
+        "SELECT COUNT(*) FROM application_records WHERE job_id = ? AND is_active = 1", (job_id,),
+    ).fetchone()[0]
+
+
+def deactivate_application_record(conn: sqlite3.Connection, record_id: int) -> None:
+    """応募記録を無効化する（要件16: 削除は原則行わず無効化方式にする）。"""
+    conn.execute(
+        "UPDATE application_records SET is_active = 0, updated_at = ? WHERE id = ?",
+        (now_jst_str(), record_id),
+    )
+    logger.info("応募履歴を無効化しました: record_id=%s", record_id)
+
+
+def list_application_history(conn: sqlite3.Connection) -> list[dict]:
+    """応募履歴一覧画面用に、案件情報と結合した全応募履歴（有効なもの）を返す。"""
+    rows = conn.execute(
+        """
+        SELECT r.*, j.title AS job_title, j.url AS job_url, j.category AS job_category,
+               j.client_name AS job_client_name
+        FROM application_records r
+        JOIN jobs j ON j.id = r.job_id
+        WHERE r.is_active = 1
+        ORDER BY r.applied_at DESC
+        """
+    ).fetchall()
+    return [_application_record_row_to_dict(r) for r in rows]
+
+
+# =============================================================================
+# 第4段階Part2: application_status_history（応募後ステータス変更履歴）
+# =============================================================================
+
+def add_status_history(
+    conn: sqlite3.Connection, application_record_id: int, previous_status: str | None,
+    new_status: str, change_reason: str | None = None, memo: str | None = None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO application_status_history
+            (application_record_id, previous_status, new_status, changed_at, change_reason, memo)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (application_record_id, previous_status, new_status, now_jst_str(), change_reason, memo),
+    )
+    return cursor.lastrowid
+
+
+def list_status_history(conn: sqlite3.Connection, application_record_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM application_status_history WHERE application_record_id = ? ORDER BY changed_at, id",
+        (application_record_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# =============================================================================
+# 第4段階Part2: client_responses（クライアント返信管理）
+# =============================================================================
+
+_CLIENT_RESPONSE_JSON_FIELDS = ["questions"]
+_CLIENT_RESPONSE_COLUMNS = [
+    "application_record_id", "received_at", "response_type", "response_body", "response_summary",
+    "questions_json", "response_due_at", "urgency", "next_action", "answer_body", "answered_at",
+    "response_status", "memo",
+]
+
+
+def _client_response_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if row is None:
+        return None
+    data = dict(row)
+    try:
+        data["questions"] = json.loads(data["questions_json"]) if data.get("questions_json") else []
+    except (TypeError, json.JSONDecodeError):
+        data["questions"] = []
+    return data
+
+
+def create_client_response(conn: sqlite3.Connection, data: dict) -> int:
+    now = now_jst_str()
+    data = dict(data)
+    data.setdefault("received_at", now)
+    data.setdefault("response_status", "未対応")
+    for field in _CLIENT_RESPONSE_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+
+    columns = [c for c in _CLIENT_RESPONSE_COLUMNS if c in data]
+    values = [data[c] for c in columns]
+    columns += ["created_at", "updated_at"]
+    values += [now, now]
+    placeholders = ", ".join(["?"] * len(columns))
+    cursor = conn.execute(
+        f"INSERT INTO client_responses ({', '.join(columns)}) VALUES ({placeholders})", values,
+    )
+    logger.info("クライアント返信を登録しました: application_record_id=%s", data.get("application_record_id"))
+    return cursor.lastrowid
+
+
+def update_client_response(conn: sqlite3.Connection, response_id: int, data: dict) -> None:
+    data = dict(data)
+    now = now_jst_str()
+    for field in _CLIENT_RESPONSE_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+    columns = [c for c in _CLIENT_RESPONSE_COLUMNS if c in data]
+    if not columns:
+        return
+    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+    values = [data[c] for c in columns] + [now, response_id]
+    conn.execute(f"UPDATE client_responses SET {set_clause} WHERE id = ?", values)
+    logger.info("クライアント返信を更新しました: response_id=%s", response_id)
+
+
+def get_client_response(conn: sqlite3.Connection, response_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM client_responses WHERE id = ?", (response_id,)).fetchone()
+    return _client_response_row_to_dict(row)
+
+
+def list_client_responses(conn: sqlite3.Connection, application_record_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM client_responses WHERE application_record_id = ? ORDER BY received_at DESC",
+        (application_record_id,),
+    ).fetchall()
+    return [_client_response_row_to_dict(r) for r in rows]
+
+
+def list_client_responses_by_status(conn: sqlite3.Connection, statuses: list[str]) -> list[dict]:
+    """返信管理画面用: 指定した対応状況の返信を、案件情報と結合して返す。"""
+    placeholders = ", ".join(["?"] * len(statuses))
+    rows = conn.execute(
+        f"""
+        SELECT cr.*, r.job_id, j.title AS job_title
+        FROM client_responses cr
+        JOIN application_records r ON r.id = cr.application_record_id
+        JOIN jobs j ON j.id = r.job_id
+        WHERE cr.response_status IN ({placeholders})
+        ORDER BY cr.response_due_at IS NULL, cr.response_due_at
+        """,
+        statuses,
+    ).fetchall()
+    return [_client_response_row_to_dict(r) for r in rows]
+
+
+# =============================================================================
+# 第4段階Part2: interviews（面談管理）
+# =============================================================================
+
+_INTERVIEW_JSON_FIELDS = ["questions"]
+_INTERVIEW_COLUMNS = [
+    "application_record_id", "title", "scheduled_start", "scheduled_end", "timezone", "meeting_type",
+    "meeting_url", "contact_name", "preparation_notes", "questions_json", "self_intro_notes",
+    "proposal_notes", "result", "next_step", "next_contact_due_at", "interview_notes", "status",
+]
+
+
+def _interview_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if row is None:
+        return None
+    data = dict(row)
+    try:
+        data["questions"] = json.loads(data["questions_json"]) if data.get("questions_json") else []
+    except (TypeError, json.JSONDecodeError):
+        data["questions"] = []
+    return data
+
+
+def create_interview(conn: sqlite3.Connection, data: dict) -> int:
+    now = now_jst_str()
+    data = dict(data)
+    data.setdefault("status", "調整中")
+    data.setdefault("timezone", "Asia/Tokyo")
+    for field in _INTERVIEW_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+
+    columns = [c for c in _INTERVIEW_COLUMNS if c in data]
+    values = [data[c] for c in columns]
+    columns += ["created_at", "updated_at"]
+    values += [now, now]
+    placeholders = ", ".join(["?"] * len(columns))
+    cursor = conn.execute(
+        f"INSERT INTO interviews ({', '.join(columns)}) VALUES ({placeholders})", values,
+    )
+    logger.info("面談を作成しました: application_record_id=%s", data.get("application_record_id"))
+    return cursor.lastrowid
+
+
+def update_interview(conn: sqlite3.Connection, interview_id: int, data: dict) -> None:
+    data = dict(data)
+    now = now_jst_str()
+    for field in _INTERVIEW_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+    columns = [c for c in _INTERVIEW_COLUMNS if c in data]
+    if not columns:
+        return
+    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+    values = [data[c] for c in columns] + [now, interview_id]
+    conn.execute(f"UPDATE interviews SET {set_clause} WHERE id = ?", values)
+    logger.info("面談を更新しました: interview_id=%s", interview_id)
+
+
+def get_interview(conn: sqlite3.Connection, interview_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM interviews WHERE id = ?", (interview_id,)).fetchone()
+    return _interview_row_to_dict(row)
+
+
+def list_interviews(conn: sqlite3.Connection, application_record_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM interviews WHERE application_record_id = ? ORDER BY scheduled_start DESC",
+        (application_record_id,),
+    ).fetchall()
+    return [_interview_row_to_dict(r) for r in rows]
+
+
+def list_interviews_with_job(conn: sqlite3.Connection) -> list[dict]:
+    """面談管理画面用: 全面談を案件情報と結合して返す。"""
+    rows = conn.execute(
+        """
+        SELECT i.*, r.job_id, j.title AS job_title
+        FROM interviews i
+        JOIN application_records r ON r.id = i.application_record_id
+        JOIN jobs j ON j.id = r.job_id
+        ORDER BY i.scheduled_start
+        """
+    ).fetchall()
+    return [_interview_row_to_dict(r) for r in rows]
+
+
+# =============================================================================
+# 第4段階Part2: negotiation_records（条件相談管理）
+# =============================================================================
+
+_NEGOTIATION_JSON_FIELDS = ["deliverables", "additional_work"]
+_NEGOTIATION_COLUMNS = [
+    "application_record_id", "original_price", "client_offered_price", "agreed_price",
+    "original_delivery_date", "requested_delivery_date", "agreed_delivery_date", "revision_count",
+    "deliverables_json", "payment_terms", "external_cost_terms", "maintenance_terms",
+    "additional_work_json", "agreement_status", "memo",
+]
+
+
+def _negotiation_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if row is None:
+        return None
+    data = dict(row)
+    for field in _NEGOTIATION_JSON_FIELDS:
+        key = f"{field}_json"
+        try:
+            data[field] = json.loads(data[key]) if data.get(key) else []
+        except (TypeError, json.JSONDecodeError):
+            data[field] = []
+    return data
+
+
+def create_negotiation_record(conn: sqlite3.Connection, data: dict) -> int:
+    now = now_jst_str()
+    data = dict(data)
+    data.setdefault("agreement_status", "未確認")
+    for field in _NEGOTIATION_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+
+    columns = [c for c in _NEGOTIATION_COLUMNS if c in data]
+    values = [data[c] for c in columns]
+    columns += ["created_at", "updated_at"]
+    values += [now, now]
+    placeholders = ", ".join(["?"] * len(columns))
+    cursor = conn.execute(
+        f"INSERT INTO negotiation_records ({', '.join(columns)}) VALUES ({placeholders})", values,
+    )
+    logger.info("条件相談を作成しました: application_record_id=%s", data.get("application_record_id"))
+    return cursor.lastrowid
+
+
+def update_negotiation_record(conn: sqlite3.Connection, negotiation_id: int, data: dict) -> None:
+    data = dict(data)
+    now = now_jst_str()
+    for field in _NEGOTIATION_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+    columns = [c for c in _NEGOTIATION_COLUMNS if c in data]
+    if not columns:
+        return
+    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+    values = [data[c] for c in columns] + [now, negotiation_id]
+    conn.execute(f"UPDATE negotiation_records SET {set_clause} WHERE id = ?", values)
+    logger.info("条件相談を更新しました: negotiation_id=%s", negotiation_id)
+
+
+def get_negotiation_record(conn: sqlite3.Connection, application_record_id: int) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT * FROM negotiation_records WHERE application_record_id = ? ORDER BY id DESC LIMIT 1",
+        (application_record_id,),
+    ).fetchone()
+    return _negotiation_row_to_dict(row)
+
+
+# =============================================================================
+# 第4段階Part2: application_results（採用・不採用・辞退の結果管理）
+# =============================================================================
+
+_RESULT_JSON_FIELDS = ["improvement_points"]
+_RESULT_COLUMNS = [
+    "application_record_id", "result_type", "result_date", "hired_at", "contracted_at",
+    "contract_amount", "contract_type", "contract_start_date", "contract_end_date",
+    "planned_delivery_date", "actual_delivery_date", "client_reason", "inferred_reason",
+    "improvement_points_json", "client_comment", "continuation_possible", "is_recurring",
+    "withdrawal_reason", "memo",
+]
+
+
+def _result_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if row is None:
+        return None
+    data = dict(row)
+    try:
+        data["improvement_points"] = json.loads(data["improvement_points_json"]) if data.get("improvement_points_json") else []
+    except (TypeError, json.JSONDecodeError):
+        data["improvement_points"] = []
+    data["is_recurring"] = bool(data.get("is_recurring"))
+    return data
+
+
+def create_application_result(conn: sqlite3.Connection, data: dict) -> int:
+    now = now_jst_str()
+    data = dict(data)
+    if "is_recurring" in data and data["is_recurring"] is not None:
+        data["is_recurring"] = int(data["is_recurring"])
+    for field in _RESULT_JSON_FIELDS:
+        if field in data:
+            data[f"{field}_json"] = json.dumps(data.pop(field), ensure_ascii=False)
+
+    columns = [c for c in _RESULT_COLUMNS if c in data]
+    values = [data[c] for c in columns]
+    columns += ["created_at", "updated_at"]
+    values += [now, now]
+    placeholders = ", ".join(["?"] * len(columns))
+    cursor = conn.execute(
+        f"INSERT INTO application_results ({', '.join(columns)}) VALUES ({placeholders})", values,
+    )
+    logger.info("応募結果を記録しました: application_record_id=%s result_type=%s", data.get("application_record_id"), data.get("result_type"))
+    return cursor.lastrowid
+
+
+def get_latest_application_result(conn: sqlite3.Connection, application_record_id: int) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT * FROM application_results WHERE application_record_id = ? ORDER BY id DESC LIMIT 1",
+        (application_record_id,),
+    ).fetchone()
+    return _result_row_to_dict(row)
+
+
+def list_application_results(conn: sqlite3.Connection, application_record_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM application_results WHERE application_record_id = ? ORDER BY id DESC",
+        (application_record_id,),
+    ).fetchall()
+    return [_result_row_to_dict(r) for r in rows]
+
+
+# =============================================================================
+# 第4段階Part2: follow_up_tasks（フォローアップ管理）
+# =============================================================================
+
+_FOLLOW_UP_COLUMNS = [
+    "application_record_id", "due_at", "task_type", "task_content", "status", "completed_at", "memo",
+]
+
+
+def create_follow_up_task(conn: sqlite3.Connection, data: dict) -> int:
+    now = now_jst_str()
+    data = dict(data)
+    data.setdefault("status", "未対応")
+    columns = [c for c in _FOLLOW_UP_COLUMNS if c in data]
+    values = [data[c] for c in columns]
+    columns += ["created_at", "updated_at"]
+    values += [now, now]
+    placeholders = ", ".join(["?"] * len(columns))
+    cursor = conn.execute(
+        f"INSERT INTO follow_up_tasks ({', '.join(columns)}) VALUES ({placeholders})", values,
+    )
+    logger.info("フォローアップを作成しました: application_record_id=%s", data.get("application_record_id"))
+    return cursor.lastrowid
+
+
+def update_follow_up_task(conn: sqlite3.Connection, task_id: int, data: dict) -> None:
+    data = dict(data)
+    now = now_jst_str()
+    columns = [c for c in _FOLLOW_UP_COLUMNS if c in data]
+    if not columns:
+        return
+    set_clause = ", ".join(f"{c} = ?" for c in columns) + ", updated_at = ?"
+    values = [data[c] for c in columns] + [now, task_id]
+    conn.execute(f"UPDATE follow_up_tasks SET {set_clause} WHERE id = ?", values)
+
+
+def get_follow_up_task(conn: sqlite3.Connection, task_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT * FROM follow_up_tasks WHERE id = ?", (task_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_follow_up_tasks(conn: sqlite3.Connection, application_record_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM follow_up_tasks WHERE application_record_id = ? ORDER BY due_at",
+        (application_record_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_all_follow_up_tasks(conn: sqlite3.Connection) -> list[dict]:
+    """フォローアップ画面用: 全タスクを案件情報と結合して返す。"""
+    rows = conn.execute(
+        """
+        SELECT f.*, r.job_id, j.title AS job_title
+        FROM follow_up_tasks f
+        JOIN application_records r ON r.id = f.application_record_id
+        JOIN jobs j ON j.id = r.job_id
+        ORDER BY f.due_at
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# =============================================================================
+# 第4段階Part2: application_timeline（応募案件タイムライン）
+# =============================================================================
+
+def add_timeline_event(
+    conn: sqlite3.Connection, application_record_id: int, event_type: str, event_title: str | None = None,
+    event_detail: str | None = None, related_table: str | None = None, related_id: int | None = None,
+    event_at: str | None = None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO application_timeline
+            (application_record_id, event_type, event_at, event_title, event_detail,
+             related_table, related_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            application_record_id, event_type, event_at or now_jst_str(), event_title, event_detail,
+            related_table, related_id, now_jst_str(),
+        ),
+    )
+    return cursor.lastrowid
+
+
+def list_timeline(conn: sqlite3.Connection, application_record_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM application_timeline WHERE application_record_id = ? ORDER BY event_at, id",
+        (application_record_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]

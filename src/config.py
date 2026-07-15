@@ -29,6 +29,7 @@ STATUS_PREPARING = "応募準備中"
 STATUS_APPLIED = "応募済み"
 STATUS_HIRED = "採用"
 STATUS_REJECTED = "不採用"
+STATUS_WITHDRAWN = "辞退"
 
 JOB_STATUSES = [
     STATUS_UNCONFIRMED,
@@ -39,6 +40,7 @@ JOB_STATUSES = [
     STATUS_APPLIED,
     STATUS_HIRED,
     STATUS_REJECTED,
+    STATUS_WITHDRAWN,
 ]
 
 # --- 募集形式 -------------------------------------------------------------
@@ -469,3 +471,297 @@ DEFAULT_APPLICATION_AI_RESPONSE = {
     "missing_information": [],
     "confidence": 0,
 }
+
+# =============================================================================
+# 第4段階Part1: 1日あたりの応募目標管理・本日の応募候補選定に関する設定
+# =============================================================================
+
+# --- 応募ジャンル区分 ---------------------------------------------------------------
+CATEGORY_GROUP_AI_DEV = "AI・開発"
+CATEGORY_GROUP_DESIGN = "デザイン"
+CATEGORY_GROUP_OTHER = "その他"
+CATEGORY_GROUPS = [CATEGORY_GROUP_AI_DEV, CATEGORY_GROUP_DESIGN, CATEGORY_GROUP_OTHER]
+
+DAILY_AI_DEV_KEYWORDS = [
+    "AI開発", "Python", "React", "Webアプリ", "API連携", "業務自動化", "ChatGPT",
+    "OpenAI API", "Dify", "Google API", "LINE連携", "ホームページ実装", "システム開発",
+]
+DAILY_DESIGN_KEYWORDS = [
+    "バナー", "SNS投稿画像", "YouTubeサムネイル", "ロゴ", "名刺", "チラシ", "Webデザイン",
+    "LPデザイン", "資料デザイン", "Illustrator", "Photoshop", "グラフィックデザイン",
+]
+DAILY_OTHER_KEYWORDS = ["データ入力", "リサーチ", "資料作成", "SNS運用", "ライティング", "その他分類"]
+
+# --- 本日の候補ステータス ------------------------------------------------------------
+CANDIDATE_STATUS_ACTIVE = "候補"
+CANDIDATE_STATUS_EXCLUDED = "対象外"
+CANDIDATE_STATUS_REMOVED = "除外"
+CANDIDATE_STATUS_POSTPONED = "保留"
+CANDIDATE_STATUS_SKIPPED = "見送り"
+CANDIDATE_STATUS_APPLIED = "応募済み"
+CANDIDATE_STATUSES = [
+    CANDIDATE_STATUS_ACTIVE, CANDIDATE_STATUS_EXCLUDED, CANDIDATE_STATUS_REMOVED,
+    CANDIDATE_STATUS_POSTPONED, CANDIDATE_STATUS_SKIPPED, CANDIDATE_STATUS_APPLIED,
+]
+
+# --- 簡易応募記録ステータス（Part1では簡易記録のみ。詳細管理はPart2で拡張） -------------------
+APPLICATION_RECORD_STATUS_APPLIED = "応募済み"
+
+# --- 候補選定から除外する案件ステータス -------------------------------------------------
+DAILY_EXCLUDED_JOB_STATUSES = [STATUS_APPLIED, STATUS_HIRED, STATUS_REJECTED, STATUS_SKIPPED, STATUS_WITHDRAWN]
+
+# --- 初期応募目標設定（設定画面から変更可能） ---------------------------------------------
+DEFAULT_DAILY_GOAL_SETTINGS = {
+    "target_count": 5,
+    "maximum_count": 7,
+    "ai_development_target": 2,
+    "design_target": 2,
+    "other_target": 1,
+    "minimum_total_score": 70,
+    "minimum_ai_score": 65,
+    "minimum_safety_score": 75,
+    "allowed_risk_levels": ["low", "medium"],
+    "new_arrival_hours": 48,
+    "maximum_applicant_count": 30,
+    "minimum_client_rating": 3.5,
+    "prioritize_verified_client": True,
+    "prioritize_ready_drafts": True,
+    "prioritize_application_written": True,
+}
+
+# --- デイリー優先スコアの重み（合計100%になるようにすること。設定画面から変更可能） ----------------
+DEFAULT_DAILY_SCORE_WEIGHTS = {
+    "total_score": 0.30,
+    "safety": 0.15,
+    "freshness": 0.15,
+    "deadline_proximity": 0.10,
+    "applicant_scarcity": 0.10,
+    "budget": 0.05,
+    "client_trust": 0.05,
+    "portfolio_match": 0.05,
+    "draft_readiness": 0.05,
+}
+
+# --- デイリー優先スコアの加点・減点（固定幅。基礎点に加算し0〜100へクランプする） -------------------
+DAILY_SCORE_BONUS_POINTS = {
+    "ready_for_application": 5,
+    "draft_created": 3,
+    "posted_within_24h": 5,
+    "few_applicants": 3,
+    "identity_verified": 3,
+    "high_client_rating": 3,
+    "high_portfolio_match": 5,
+}
+DAILY_SCORE_PENALTY_POINTS = {
+    "many_applicants": 3,
+    "deadline_very_close": 6,
+    "missing_skills_many": 4,
+    "low_budget": 4,
+    "vague_body": 3,
+    "medium_risk": 5,
+    "draft_missing": 5,
+    "low_portfolio_match": 3,
+}
+
+DAILY_HIGH_PORTFOLIO_MATCH_THRESHOLD = 90
+DAILY_FEW_APPLICANTS_THRESHOLD = 10
+DAILY_MANY_APPLICANTS_THRESHOLD = 15
+DAILY_HIGH_CLIENT_RATING_THRESHOLD = 4.5
+DAILY_DEADLINE_VERY_CLOSE_DAYS = 2
+DAILY_MISSING_SKILLS_MANY_COUNT = 3
+
+# =============================================================================
+# 第4段階Part2: 正式な応募履歴管理（応募後ステータス・返信・面談・条件相談・結果・フォローアップ）
+# =============================================================================
+
+# --- 応募経路 ---------------------------------------------------------------------
+SOURCE_PLATFORM_CROWDWORKS = "クラウドワークス"
+SOURCE_PLATFORM_COCONALA = "ココナラ"
+SOURCE_PLATFORM_LANCERS = "ランサーズ"
+SOURCE_PLATFORM_SNS = "SNS"
+SOURCE_PLATFORM_DIRECT = "直接営業"
+SOURCE_PLATFORM_REFERRAL = "紹介"
+SOURCE_PLATFORM_OTHER = "その他"
+SOURCE_PLATFORMS = [
+    SOURCE_PLATFORM_CROWDWORKS, SOURCE_PLATFORM_COCONALA, SOURCE_PLATFORM_LANCERS,
+    SOURCE_PLATFORM_SNS, SOURCE_PLATFORM_DIRECT, SOURCE_PLATFORM_REFERRAL, SOURCE_PLATFORM_OTHER,
+]
+DEFAULT_SOURCE_PLATFORM = SOURCE_PLATFORM_CROWDWORKS
+
+# --- 契約種別・税区分 ---------------------------------------------------------------
+CONTRACT_TYPE_HOURLY = "時間単価"
+CONTRACT_TYPE_FIXED = "固定報酬"
+CONTRACT_TYPES = [CONTRACT_TYPE_HOURLY, CONTRACT_TYPE_FIXED]
+
+TAX_TYPE_INCLUSIVE = "税込み"
+TAX_TYPE_EXCLUSIVE = "税抜き"
+TAX_TYPES = [TAX_TYPE_INCLUSIVE, TAX_TYPE_EXCLUSIVE]
+
+# --- 応募後ステータス（21種） ---------------------------------------------------------
+APP_STATUS_APPLIED = "応募済み"
+APP_STATUS_UNREAD = "未読・確認待ち"
+APP_STATUS_VIEWED = "閲覧済み"
+APP_STATUS_REPLIED = "返信あり"
+APP_STATUS_QA_IN_PROGRESS = "質問対応中"
+APP_STATUS_ADDITIONAL_MATERIALS = "追加資料提出"
+APP_STATUS_INTERVIEW_SCHEDULING = "面談調整中"
+APP_STATUS_INTERVIEW_SCHEDULED = "面談予定"
+APP_STATUS_INTERVIEW_DONE = "面談完了"
+APP_STATUS_NEGOTIATING = "条件相談中"
+APP_STATUS_PROVISIONAL_HIRE = "仮採用"
+APP_STATUS_HIRED = "採用"
+APP_STATUS_CONTRACTED = "契約済み"
+APP_STATUS_WORKING = "作業中"
+APP_STATUS_DELIVERED = "納品済み"
+APP_STATUS_COMPLETED = "完了"
+APP_STATUS_REJECTED = "不採用"
+APP_STATUS_WITHDRAWN = "辞退"
+APP_STATUS_CLOSED = "募集終了"
+APP_STATUS_EXPIRED = "期限切れ"
+APP_STATUS_UNKNOWN = "結果不明"
+
+APPLICATION_STATUSES = [
+    APP_STATUS_APPLIED, APP_STATUS_UNREAD, APP_STATUS_VIEWED, APP_STATUS_REPLIED,
+    APP_STATUS_QA_IN_PROGRESS, APP_STATUS_ADDITIONAL_MATERIALS, APP_STATUS_INTERVIEW_SCHEDULING,
+    APP_STATUS_INTERVIEW_SCHEDULED, APP_STATUS_INTERVIEW_DONE, APP_STATUS_NEGOTIATING,
+    APP_STATUS_PROVISIONAL_HIRE, APP_STATUS_HIRED, APP_STATUS_CONTRACTED, APP_STATUS_WORKING,
+    APP_STATUS_DELIVERED, APP_STATUS_COMPLETED, APP_STATUS_REJECTED, APP_STATUS_WITHDRAWN,
+    APP_STATUS_CLOSED, APP_STATUS_EXPIRED, APP_STATUS_UNKNOWN,
+]
+
+# 確定（終端）状態。到達後は通常それ以上の応募後ステータス変更を想定しない。
+APPLICATION_TERMINAL_STATUSES = [
+    APP_STATUS_HIRED, APP_STATUS_CONTRACTED, APP_STATUS_WORKING, APP_STATUS_DELIVERED,
+    APP_STATUS_COMPLETED, APP_STATUS_REJECTED, APP_STATUS_WITHDRAWN, APP_STATUS_CLOSED, APP_STATUS_EXPIRED,
+]
+
+# 応募後ステータス → 案件(jobs)ステータス の同期マップ（該当しないステータスは同期しない）
+APPLICATION_STATUS_TO_JOB_STATUS = {
+    APP_STATUS_HIRED: STATUS_HIRED,
+    APP_STATUS_REJECTED: STATUS_REJECTED,
+    APP_STATUS_WITHDRAWN: STATUS_WITHDRAWN,
+}
+
+# --- 返信種別 ---------------------------------------------------------------------
+RESPONSE_TYPE_QUESTION = "質問"
+RESPONSE_TYPE_INTERVIEW_REQUEST = "面談依頼"
+RESPONSE_TYPE_MATERIAL_REQUEST = "追加資料依頼"
+RESPONSE_TYPE_PRICE_NEGOTIATION = "金額相談"
+RESPONSE_TYPE_DELIVERY_NEGOTIATION = "納期相談"
+RESPONSE_TYPE_TEST_REQUEST = "テスト依頼"
+RESPONSE_TYPE_HIRED = "採用連絡"
+RESPONSE_TYPE_REJECTED = "不採用連絡"
+RESPONSE_TYPE_ON_HOLD = "保留連絡"
+RESPONSE_TYPE_OTHER = "その他"
+RESPONSE_TYPES = [
+    RESPONSE_TYPE_QUESTION, RESPONSE_TYPE_INTERVIEW_REQUEST, RESPONSE_TYPE_MATERIAL_REQUEST,
+    RESPONSE_TYPE_PRICE_NEGOTIATION, RESPONSE_TYPE_DELIVERY_NEGOTIATION, RESPONSE_TYPE_TEST_REQUEST,
+    RESPONSE_TYPE_HIRED, RESPONSE_TYPE_REJECTED, RESPONSE_TYPE_ON_HOLD, RESPONSE_TYPE_OTHER,
+]
+
+# --- 返信対応状況 -------------------------------------------------------------------
+RESPONSE_STATUS_UNHANDLED = "未対応"
+RESPONSE_STATUS_DRAFTING = "回答案作成中"
+RESPONSE_STATUS_READY = "回答準備完了"
+RESPONSE_STATUS_REPLIED = "返信済み"
+RESPONSE_STATUS_NOT_NEEDED = "対応不要"
+RESPONSE_STATUS_ON_HOLD = "保留"
+RESPONSE_STATUSES = [
+    RESPONSE_STATUS_UNHANDLED, RESPONSE_STATUS_DRAFTING, RESPONSE_STATUS_READY,
+    RESPONSE_STATUS_REPLIED, RESPONSE_STATUS_NOT_NEEDED, RESPONSE_STATUS_ON_HOLD,
+]
+
+# --- 緊急度 ---------------------------------------------------------------------
+URGENCY_HIGH = "高"
+URGENCY_MEDIUM = "中"
+URGENCY_LOW = "低"
+URGENCY_LEVELS = [URGENCY_HIGH, URGENCY_MEDIUM, URGENCY_LOW]
+
+DEFAULT_RESPONSE_TARGET_HOURS = 24  # 返信目標時間の初期値（画面から変更可能）
+
+# --- 面談形式・面談ステータス ---------------------------------------------------------
+MEETING_TYPE_ONLINE = "オンライン"
+MEETING_TYPE_PHONE = "電話"
+MEETING_TYPE_IN_PERSON = "対面"
+MEETING_TYPE_CHAT = "チャット"
+MEETING_TYPE_OTHER = "その他"
+MEETING_TYPES = [MEETING_TYPE_ONLINE, MEETING_TYPE_PHONE, MEETING_TYPE_IN_PERSON, MEETING_TYPE_CHAT, MEETING_TYPE_OTHER]
+
+INTERVIEW_STATUS_SCHEDULING = "調整中"
+INTERVIEW_STATUS_CONFIRMED = "確定"
+INTERVIEW_STATUS_DONE = "実施済み"
+INTERVIEW_STATUS_POSTPONED = "延期"
+INTERVIEW_STATUS_CANCELLED = "キャンセル"
+INTERVIEW_STATUS_NO_SHOW = "無断キャンセル"
+INTERVIEW_STATUSES = [
+    INTERVIEW_STATUS_SCHEDULING, INTERVIEW_STATUS_CONFIRMED, INTERVIEW_STATUS_DONE,
+    INTERVIEW_STATUS_POSTPONED, INTERVIEW_STATUS_CANCELLED, INTERVIEW_STATUS_NO_SHOW,
+]
+
+# --- 条件合意状況 -------------------------------------------------------------------
+AGREEMENT_STATUS_UNCONFIRMED = "未確認"
+AGREEMENT_STATUS_NEGOTIATING = "相談中"
+AGREEMENT_STATUS_AGREED = "合意"
+AGREEMENT_STATUS_NOT_AGREED = "合意できず"
+AGREEMENT_STATUS_WITHDRAWN = "辞退"
+AGREEMENT_STATUSES = [
+    AGREEMENT_STATUS_UNCONFIRMED, AGREEMENT_STATUS_NEGOTIATING, AGREEMENT_STATUS_AGREED,
+    AGREEMENT_STATUS_NOT_AGREED, AGREEMENT_STATUS_WITHDRAWN,
+]
+
+# --- 結果種別・不採用理由 -------------------------------------------------------------
+RESULT_TYPE_HIRED = "採用"
+RESULT_TYPE_REJECTED = "不採用"
+RESULT_TYPE_WITHDRAWN = "辞退"
+RESULT_TYPES = [RESULT_TYPE_HIRED, RESULT_TYPE_REJECTED, RESULT_TYPE_WITHDRAWN]
+
+REJECTION_REASONS = [
+    "他応募者に決定", "経験不足", "スキル不一致", "金額", "納期", "実績不足",
+    "返信速度", "募集取り消し", "不明", "その他",
+]
+
+# --- フォローアップ種別・対応状況 -------------------------------------------------------
+FOLLOW_UP_TYPE_RESPONSE_CHECK = "返信確認"
+FOLLOW_UP_TYPE_INTERVIEW_PREP = "面談準備"
+FOLLOW_UP_TYPE_MATERIAL_SUBMIT = "追加資料提出"
+FOLLOW_UP_TYPE_CONDITION_CHECK = "条件確認"
+FOLLOW_UP_TYPE_CONTRACT_CHECK = "契約確認"
+FOLLOW_UP_TYPE_DELIVERY_CHECK = "納期確認"
+FOLLOW_UP_TYPE_RESULT_SUMMARY = "結果整理"
+FOLLOW_UP_TYPE_OTHER = "その他"
+FOLLOW_UP_TYPES = [
+    FOLLOW_UP_TYPE_RESPONSE_CHECK, FOLLOW_UP_TYPE_INTERVIEW_PREP, FOLLOW_UP_TYPE_MATERIAL_SUBMIT,
+    FOLLOW_UP_TYPE_CONDITION_CHECK, FOLLOW_UP_TYPE_CONTRACT_CHECK, FOLLOW_UP_TYPE_DELIVERY_CHECK,
+    FOLLOW_UP_TYPE_RESULT_SUMMARY, FOLLOW_UP_TYPE_OTHER,
+]
+
+FOLLOW_UP_STATUS_PENDING = "未対応"
+FOLLOW_UP_STATUS_IN_PROGRESS = "対応中"
+FOLLOW_UP_STATUS_DONE = "完了"
+FOLLOW_UP_STATUSES = [FOLLOW_UP_STATUS_PENDING, FOLLOW_UP_STATUS_IN_PROGRESS, FOLLOW_UP_STATUS_DONE]
+
+# --- タイムラインイベント種別 ---------------------------------------------------------
+TIMELINE_EVENT_APPLIED = "応募"
+TIMELINE_EVENT_STATUS_CHANGE = "ステータス変更"
+TIMELINE_EVENT_RESPONSE_RECEIVED = "返信受信"
+TIMELINE_EVENT_RESPONSE_SENT = "返信送信"
+TIMELINE_EVENT_INTERVIEW_CREATED = "面談作成"
+TIMELINE_EVENT_INTERVIEW_CHANGED = "面談変更"
+TIMELINE_EVENT_INTERVIEW_DONE = "面談完了"
+TIMELINE_EVENT_NEGOTIATION_CHANGED = "条件変更"
+TIMELINE_EVENT_HIRED = "採用"
+TIMELINE_EVENT_REJECTED = "不採用"
+TIMELINE_EVENT_WITHDRAWN = "辞退"
+TIMELINE_EVENT_FOLLOW_UP = "フォローアップ"
+TIMELINE_EVENT_MEMO_ADDED = "メモ追加"
+TIMELINE_EVENT_TYPES = [
+    TIMELINE_EVENT_APPLIED, TIMELINE_EVENT_STATUS_CHANGE, TIMELINE_EVENT_RESPONSE_RECEIVED,
+    TIMELINE_EVENT_RESPONSE_SENT, TIMELINE_EVENT_INTERVIEW_CREATED, TIMELINE_EVENT_INTERVIEW_CHANGED,
+    TIMELINE_EVENT_INTERVIEW_DONE, TIMELINE_EVENT_NEGOTIATION_CHANGED, TIMELINE_EVENT_HIRED,
+    TIMELINE_EVENT_REJECTED, TIMELINE_EVENT_WITHDRAWN, TIMELINE_EVENT_FOLLOW_UP, TIMELINE_EVENT_MEMO_ADDED,
+]
+
+# --- 重要なステータス変更（画面で確認を促す対象） ----------------------------------------
+CRITICAL_STATUS_CHANGES = [
+    APP_STATUS_HIRED, APP_STATUS_REJECTED, APP_STATUS_WITHDRAWN, APP_STATUS_CONTRACTED,
+]
