@@ -1,4 +1,43 @@
-# クラウドワークス案件収集・管理ツール
+# クラウドワークスAI営業支援システム
+
+案件収集から適合度分析、応募文の作成、応募後の履歴管理、営業KPIの振り返りまでを支援するローカルアプリです。
+
+[作品一覧](https://github.com/moedaichi0629-ai/landing-page) · [ポートフォリオ](https://moedaichi0629-ai.github.io/)
+
+## 解決する課題
+
+**想定利用者：** クラウドソーシングで案件を探す個人事業主・フリーランス
+
+案件選定・応募文作成・応募後の管理が分散し、営業活動を振り返りにくいこと。
+
+## 主な機能
+
+- 手動入力・CSV・公開ページURLによる案件登録と重複防止
+- ルールとAIによる適合度分析・危険案件の検出
+- 案件に合わせた応募文・ポートフォリオ・金額・納期の提案
+- 応募目標・応募履歴・返信・面談・フォローアップの管理
+- 営業KPI・期間比較・CSV/Excel出力
+
+## デモ・利用方法
+
+公開デモはありません。PC上でローカル起動して使用します。
+
+## 使用技術
+
+Python / Streamlit / SQLite / pandas / Altair / OpenAI・Anthropic・Gemini API
+
+## 工夫した点
+
+AI APIなしでの代替判定、分析結果のキャッシュ、応募時点のスナップショット、母数を示す集計を採用しています。
+
+## 現在の実装範囲
+
+応募文は利用者が確認・編集し、実際の応募や返信は手動で行います。自動応募・自動送信は実装していません。
+
+## セットアップ・技術詳細
+
+<details>
+<summary>操作方法・構成・設定手順などの詳細を開く</summary>
 
 ## 1. アプリ概要
 
@@ -996,7 +1035,7 @@ APIキーはコードやデータベース・画面上には一切保存され�
 
 | ポートフォリオ | URL | 用途 |
 |---|---|---|
-| AIエンジニア・Web制作ポートフォリオ | https://moedaichi0629-ai.github.io/landing-page/ | AI開発・Webアプリ・API連携・業務自動化・ホームページ制作案件 |
+| AIエンジニア・Web制作ポートフォリオ | https://moedaichi0629-ai.github.io/ | AI開発・Webアプリ・API連携・業務自動化・ホームページ制作案件 |
 | グラフィック・Webデザイン ポートフォリオ（foriio） | https://www.foriio.com/rilymoe0902 | バナー・SNS投稿画像・ロゴ・名刺・チラシ・Webデザイン案件 |
 | GitHub | https://github.com/moedaichi0629-ai | 技術力の確認が必要なAI・開発案件 |
 
@@ -1346,3 +1385,6 @@ git remote add origin https://github.com/<あなたのユーザー名>/crowdwork
 git branch -M main
 git push -u origin main
 ```
+
+</details>
+
