@@ -2,7 +2,7 @@
 
 案件収集から適合度分析、応募文の作成、応募後の履歴管理、営業KPIの振り返りまでを支援するローカルアプリです。
 
-[作品一覧](https://github.com/moedaichi0629-ai/landing-page) · [ポートフォリオ](https://moedaichi0629-ai.github.io/landing-page/)
+[作品一覧](https://github.com/moedaichi0629-ai/landing-page) · [ポートフォリオ](https://moedaichi0629-ai.github.io/)
 
 ## 解決する課題
 
@@ -1029,7 +1029,7 @@ APIキーはコードやデータベース・画面上には一切保存され�
 
 | ポートフォリオ | URL | 用途 |
 |---|---|---|
-| AIエンジニア・Web制作ポートフォリオ | https://moedaichi0629-ai.github.io/landing-page/ | AI開発・Webアプリ・API連携・業務自動化・ホームページ制作案件 |
+| AIエンジニア・Web制作ポートフォリオ | https://moedaichi0629-ai.github.io/ | AI開発・Webアプリ・API連携・業務自動化・ホームページ制作案件 |
 | グラフィック・Webデザイン ポートフォリオ（foriio） | https://www.foriio.com/rilymoe0902 | バナー・SNS投稿画像・ロゴ・名刺・チラシ・Webデザイン案件 |
 | GitHub | https://github.com/moedaichi0629-ai | 技術力の確認が必要なAI・開発案件 |
 
