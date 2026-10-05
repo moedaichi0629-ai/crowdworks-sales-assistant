@@ -9,9 +9,9 @@ from src.csv_import import auto_map_columns, import_dataframe, read_csv_bytes
 from src.database import init_db, session
 from src.job_collector import collect_jobs_from_urls
 from src.logger import get_logger
-from src.manual_import import extract_preview_from_body, save_manual_job
+from src.manual_import import extract_preview_from_body, save_manual_job, save_url_only_jobs
 from src.repositories import get_all_settings
-from src.validators import ValidationError
+from src.validators import ValidationError, is_blocked_domain
 
 st.set_page_config(page_title="案件追加 | クラウドワークス案件管理ツール", page_icon="➕", layout="wide")
 logger = get_logger()
@@ -42,6 +42,31 @@ with tab_url:
         height=120,
         placeholder="https://example.com/jobs/12345\nhttps://example.com/jobs/12346",
     )
+
+    raw_urls = [u.strip() for u in url_text.splitlines() if u.strip()]
+    blocked_urls = [u for u in raw_urls if is_blocked_domain(u)]
+    valid_urls = [u for u in raw_urls if u not in blocked_urls]
+
+    if blocked_urls:
+        st.warning(
+            f"入力された{len(raw_urls)}件のうち{len(blocked_urls)}件がクラウドワークス(crowdworks.jp)のURLです。"
+            "自動取得は行えないため、「URLから取得を実行」ではこれらをスキップします。"
+        )
+        with st.expander(f"クラウドワークスのURL（{len(blocked_urls)}件）をタイトル未入力の下書きとして一括登録する"):
+            st.caption(
+                "本文の自動取得は行わず、URLだけを登録します。登録後は「案件一覧」からタイトル・本文を"
+                "編集してください（案件ページの内容をコピー＆ペーストする形になります）。"
+            )
+            if st.button("下書きとして一括登録する", key="register_url_only"):
+                with session() as conn:
+                    stub_result = save_url_only_jobs(conn, blocked_urls)
+                st.success(
+                    f"下書き登録完了: 対象{stub_result['total']}件 / 新規{stub_result['inserted']}件 / "
+                    f"登録済み(重複){stub_result['duplicate']}件 / エラー{stub_result['errors']}件"
+                )
+                if stub_result["error_rows"]:
+                    st.dataframe(pd.DataFrame(stub_result["error_rows"]), width="stretch", hide_index=True)
+
     keyword_for_urls = st.selectbox(
         "検索キーワード（取得結果に紐付けます）",
         options=[""] + settings.get("search_keywords", DEFAULT_SETTINGS["search_keywords"]),
@@ -56,20 +81,22 @@ with tab_url:
     )
 
     if st.button("URLから取得を実行", type="primary"):
-        urls = [u.strip() for u in url_text.splitlines() if u.strip()]
-        if not urls:
+        if not raw_urls:
             st.error("取得したいURLを1件以上入力してください。")
+        elif not valid_urls:
+            st.error("入力されたURLはすべて自動取得が禁止されたドメインのため、実行できません。上の下書き一括登録をご利用ください。")
         else:
             with st.spinner("取得中です。しばらくお待ちください…"):
                 try:
                     with session() as conn:
                         result = collect_jobs_from_urls(
-                            conn, urls, keyword=keyword_for_urls,
+                            conn, valid_urls, keyword=keyword_for_urls,
                             max_count=int(max_count), wait_seconds=float(wait_seconds),
                         )
+                    skipped_note = f" / スキップ(禁止ドメイン){len(blocked_urls)}件" if blocked_urls else ""
                     st.success(
                         f"取得完了: 対象{result['total']}件 / 新規{result['inserted']}件 / "
-                        f"更新{result['updated']}件 / 重複{result['duplicate']}件 / エラー{result['errors']}件"
+                        f"更新{result['updated']}件 / 重複{result['duplicate']}件 / エラー{result['errors']}件{skipped_note}"
                     )
                     if result["error_rows"]:
                         st.error("取得できなかったURLがあります（詳細はlogs/app.logをご確認ください）")

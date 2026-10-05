@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import sqlite3
+from urllib.parse import urlsplit
 
 from src.config import SOURCE_TYPE_MANUAL
+from src.duplicate_checker import find_duplicate
 from src.parsers import extract_fields_from_body, parse_budget, parse_date
-from src.repositories import upsert_job
-from src.utils import now_jst_str
+from src.repositories import insert_job, upsert_job
+from src.utils import normalize_url, now_jst_str
 from src.validators import ValidationError, validate_required_title, validate_url_format
 
 
@@ -58,3 +60,57 @@ def save_manual_job(conn: sqlite3.Connection, form_data: dict) -> tuple[str, int
     """手動入力内容をバリデーションして保存する。戻り値は (inserted|updated|duplicate, job_id)。"""
     data = build_job_from_manual_input(form_data)
     return upsert_job(conn, data)
+
+
+def build_job_from_url_only(url: str) -> dict:
+    """URLのみ判明している案件を、後から編集する前提の下書きとして登録するためのデータを組み立てる。
+
+    自動取得が禁止されたドメイン（crowdworks.jp 等）のURLを一括で下書き登録し、
+    タイトル・本文は案件一覧から手動で編集してもらう運用を想定している。
+    """
+    validated = validate_url_format(url)
+    if not validated:
+        raise ValidationError("URLを入力してください。")
+
+    path = urlsplit(validated).path.rstrip("/")
+    hint = path.rsplit("/", 1)[-1] if path else validated
+    return {
+        "title": f"（タイトル未入力）{hint}",
+        "url": validated,
+        "source_type": SOURCE_TYPE_MANUAL,
+        "collected_at": now_jst_str(),
+        "memo": "URLのみ一括登録した下書きです。案件一覧からタイトル・本文を編集してください。",
+    }
+
+
+def save_url_only_jobs(conn: sqlite3.Connection, urls: list[str]) -> dict:
+    """URLのみで複数案件を下書き登録する。
+
+    既存案件と同じURLの場合は上書きせず「重複」として扱う
+    （タイトル未入力のプレースホルダーで既存データを壊さないため）。
+    戻り値: {"total", "inserted", "duplicate", "errors", "error_rows"}
+    """
+    targets = [u.strip() for u in urls if u.strip()]
+    inserted = duplicate = errors = 0
+    error_rows: list[dict] = []
+
+    for url in targets:
+        try:
+            data = build_job_from_url_only(url)
+        except ValidationError as exc:
+            errors += 1
+            error_rows.append({"url": url, "reason": str(exc)})
+            continue
+
+        existing = find_duplicate(conn, {"normalized_url": normalize_url(data["url"])})
+        if existing is not None:
+            duplicate += 1
+            continue
+
+        insert_job(conn, data)
+        inserted += 1
+
+    return {
+        "total": len(targets), "inserted": inserted, "duplicate": duplicate,
+        "errors": errors, "error_rows": error_rows,
+    }

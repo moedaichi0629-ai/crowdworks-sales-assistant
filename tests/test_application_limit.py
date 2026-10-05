@@ -5,11 +5,14 @@ import pytest
 
 from src.applications.application_limit_service import get_limit_status
 from src.applications.application_record_service import OverLimitReasonRequiredError, record_application
-from src.daily.goal_service import save_daily_goal
+from src.daily.goal_service import save_daily_goal, today_jst_str
 from src.database import session
 from src.repositories import count_applications_for_date, create_application_record, insert_job
 
-TARGET_DATE = "2026-07-15"
+# record_application() は応募日時(applied_at)を常に「実行時点の現在時刻」で記録するため、
+# 上限判定(count_applications_for_date)と一致させるにはTARGET_DATEを実際の「今日」にする必要がある
+# （固定の過去日付にすると、テスト実行日によって applied_at の日付とズレて誤って0件扱いになる）。
+TARGET_DATE = today_jst_str()
 
 
 def _insert_job(db_path, title="テスト案件"):
